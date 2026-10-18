@@ -1,4 +1,5 @@
 import { requireAdmin } from "@/lib/auth";
+import { APP_NAME } from "@/lib/app-name";
 import {
   getMember,
   getMemberAttendance,
@@ -93,7 +94,7 @@ async function xlsxResponse(
 ): Promise<Response> {
   const { default: ExcelJS } = await import("exceljs");
   const wb = new ExcelJS.Workbook();
-  wb.creator = "AttendanceApp";
+  wb.creator = APP_NAME;
   wb.created = new Date();
 
   // History is newest-first, so [0] is the latest and .at(-1) the earliest.

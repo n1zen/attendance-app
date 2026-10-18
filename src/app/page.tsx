@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { APP_NAME } from "@/lib/app-name";
 import { btnPrimary, btnSecondary, cardCls } from "@/lib/ui";
 
 const steps = [
@@ -22,7 +23,7 @@ export default function Home() {
       <header className="border-b border-slate-200 bg-white">
         <div className="mx-auto flex h-14 w-full max-w-5xl items-center justify-between px-4">
           <span className="text-sm font-bold tracking-tight text-slate-900">
-            AttendanceApp
+            {APP_NAME}
           </span>
           <Link
             href="/admin"

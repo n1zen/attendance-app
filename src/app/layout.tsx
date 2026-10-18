@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import { APP_NAME } from "@/lib/app-name";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -14,8 +15,8 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: {
-    default: "AttendanceApp",
-    template: "%s • AttendanceApp",
+    default: APP_NAME,
+    template: `%s • ${APP_NAME}`,
   },
   description:
     "Scan a QR code to log your attendance. Admins manage members, groups, and daily check-ins from the dashboard.",

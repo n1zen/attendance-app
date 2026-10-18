@@ -1,4 +1,5 @@
 import { requireAdmin } from "@/lib/auth";
+import { APP_NAME } from "@/lib/app-name";
 import {
   getAttendanceLog,
   getRangeStats,
@@ -99,7 +100,7 @@ async function xlsxResponse(stats: RangeStats): Promise<Response> {
   const log = await getAttendanceLog(stats.from, stats.to);
   const { default: ExcelJS } = await import("exceljs");
   const wb = new ExcelJS.Workbook();
-  wb.creator = "AttendanceApp";
+  wb.creator = APP_NAME;
   wb.created = new Date();
 
   const sheet = (name: string, headers: string[], widths: number[]) => {
