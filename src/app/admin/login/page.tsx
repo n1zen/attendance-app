@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { APP_NAME } from "@/lib/app-name";
 import { LoginForm } from "./login-form";
 
 export const metadata: Metadata = {
@@ -12,7 +13,7 @@ export default function LoginPage() {
       <div className="w-full max-w-sm">
         <div className="mb-6 text-center">
           <h1 className="text-xl font-bold tracking-tight text-slate-900">
-            AttendanceApp
+            {APP_NAME}
           </h1>
           <p className="mt-1 text-sm text-slate-500">
             Sign in to manage members, groups, and check-ins.

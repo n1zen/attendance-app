@@ -111,6 +111,7 @@ Vercel's serverless filesystem is ephemeral, so a deployed instance can't rely o
    | Variable            | Value                                              |
    | ------------------- | -------------------------------------------------- |
    | `SESSION_SECRET`    | a fresh random hex string (see command above)      |
+   | `APP_NAME`          | *(optional)* your app's display name, e.g. `ACME Attendance` |
    | `DATABASE_URL`      | your Turso database URL (`libsql://...`)           |
    | `TURSO_AUTH_TOKEN`  | the Turso auth token                               |
 
@@ -123,6 +124,7 @@ Vercel's serverless filesystem is ephemeral, so a deployed instance can't rely o
 | Variable           | Where                  | Purpose                                                                 |
 | ------------------ | ---------------------- | ----------------------------------------------------------------------- |
 | `SESSION_SECRET`   | `.env.local` / Vercel  | Signs admin + device session cookies. **Required.**                     |
+| `APP_NAME`         | optional / Vercel      | The app's display name (page titles, headers, exported files). Defaults to `AttendanceApp`; takes effect after a rebuild. |
 | `DATABASE_URL`     | optional / Vercel      | `file:...` path or `libsql://...` URL. Locally defaults to a SQLite file; **required on Vercel.** |
 | `TURSO_AUTH_TOKEN` | optional / Vercel      | Auth token when using a hosted Turso database.                          |
 
@@ -187,19 +189,19 @@ src/
 
 ## Forking this project
 
-1. Open the repository on GitHub and click **Fork** (top right). Keep "Copy the `master` branch only" checked.
+1. Open [the repository](https://github.com/n1zen/attendance-app) on GitHub and click **Fork** (top right). Keep "Copy the `master` branch only" checked.
 2. Clone **your** fork and enter the project:
 
    ```bash
-   git clone https://github.com/<your-username>/AttendanceApp.git
-   cd AttendanceApp
+   git clone https://github.com/<your-username>/attendance-app.git
+   cd attendance-app
    ```
 
 3. Set it up by following [Local development](#local-development) above (`.env.local`, `npm install`, `npm run dev`) — that's all it takes; there is no database server to install.
 4. Optionally point your fork at the original repository so you can pull in upstream changes later:
 
    ```bash
-   git remote add upstream https://github.com/<owner>/AttendanceApp.git
+   git remote add upstream https://github.com/n1zen/attendance-app.git
    ```
 
 5. Push your fork and (optionally) connect it to your own Vercel project + Turso database by following [Deploying to Vercel](#deploying-to-vercel) — you'll get a full private deployment of your fork.

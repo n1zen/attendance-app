@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { APP_NAME } from "@/lib/app-name";
 import { btnPrimary, btnSecondary, cardCls } from "@/lib/ui";
 
 const steps = [
@@ -22,14 +23,31 @@ export default function Home() {
       <header className="border-b border-slate-200 bg-white">
         <div className="mx-auto flex h-14 w-full max-w-5xl items-center justify-between px-4">
           <span className="text-sm font-bold tracking-tight text-slate-900">
-            AttendanceApp
+            {APP_NAME}
           </span>
-          <Link
-            href="/admin"
-            className="text-sm font-medium text-slate-600 transition hover:text-indigo-600"
-          >
-            Admin
-          </Link>
+          <div className="flex items-center gap-3">
+            <a
+              href="https://github.com/n1zen/attendance-app"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                className="h-4 w-4 fill-current"
+                aria-hidden="true"
+              >
+                <path d="M12 .3a12 12 0 0 0-3.8 23.4c.6.1.8-.3.8-.6v-2c-3.3.7-4-1.6-4-1.6-.6-1.4-1.4-1.8-1.4-1.8-1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.8 1.3 3.5 1 0-.8.4-1.3.7-1.6-2.7-.3-5.5-1.3-5.5-6 0-1.2.5-2.3 1.3-3.1-.2-.4-.6-1.6 0-3.2 0 0 1-.3 3.4 1.2a11.5 11.5 0 0 1 6 0c2.4-1.5 3.4-1.2 3.4-1.2.6 1.6.2 2.8 0 3.2.9.8 1.3 1.9 1.3 3.2 0 4.6-2.8 5.6-5.5 5.9.5.4.9 1 .9 2.2v3.3c0 .3.2.7.8.6A12 12 0 0 0 12 .3" />
+              </svg>
+              GitHub
+            </a>
+            <Link
+              href="/admin"
+              className="text-sm font-medium text-slate-600 transition hover:text-indigo-600"
+            >
+              Admin
+            </Link>
+          </div>
         </div>
       </header>
 
@@ -72,7 +90,7 @@ export default function Home() {
       </main>
 
       <footer className="border-t border-slate-200 bg-white py-6 text-center text-xs text-slate-400">
-        Local-first · SQLite · Next.js
+        Local-first · SQLite · Next.js · <a target="_blank" href="https://github.com/n1zen" className="hover:underline hover:text-indigo-600">n1zen-dev</a>
       </footer>
     </div>
   );

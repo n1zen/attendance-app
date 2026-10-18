@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { Suspense, type ReactNode } from "react";
+import { APP_NAME } from "@/lib/app-name";
 import { logoutAction } from "../actions";
 import { SidebarNav, SidebarNavFallback } from "./sidebar-nav";
 
@@ -100,7 +101,7 @@ function BrandLink() {
       href="/admin"
       className="flex items-center gap-2 text-sm font-bold tracking-tight text-slate-900"
     >
-      AttendanceApp
+      {APP_NAME}
       <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-indigo-600">
         Admin
       </span>
