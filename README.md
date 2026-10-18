@@ -247,3 +247,8 @@ Contributions are welcome — bug reports, fixes, documentation, and features al
 - **Don't commit local state** — `.env.local`, the SQLite database file, and `node_modules/` stay out of the repo (`.gitignore` already covers them).
 - **Large changes?** Open an issue first to discuss the direction before investing in a big PR.
 - **Found a bug but can't fix it?** An issue with reproduction steps is a perfectly good contribution.
+- **License.** Contributions are accepted under the same terms as the project itself — see [License](#license) below.
+
+## License
+
+Released under the [MIT License](LICENSE) — © 2026 n1zen. You're free to use, modify, and distribute it (even commercially), as long as the copyright notice stays intact.
