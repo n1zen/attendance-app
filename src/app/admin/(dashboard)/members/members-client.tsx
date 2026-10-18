@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useActionState, useEffect, useMemo, useState } from "react";
 import {
   addMemberAction,
+  bulkDeleteMembersAction,
   deleteMemberAction,
   updateMemberAction,
 } from "@/app/admin/actions";
@@ -18,6 +19,7 @@ import {
   errorText,
   inputCls,
   labelCls,
+  successText,
 } from "@/lib/ui";
 
 const idle: MessageState = { status: "idle" };
@@ -32,6 +34,11 @@ export function MembersClient({
   const [query, setQuery] = useState("");
   const [groupFilter, setGroupFilter] = useState("all");
   const [showAdd, setShowAdd] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkState, bulkAction, bulkPending] = useActionState(
+    bulkDeleteMembersAction,
+    idle
+  );
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -44,6 +51,40 @@ export function MembersClient({
       );
     });
   }, [members, query, groupFilter]);
+
+  // Only the currently visible rows count toward a bulk delete — a stale
+  // selection hidden by the search/group filter can never be deleted by accident.
+  const selectedVisible = filtered.filter((m) => selected.has(m.id));
+  const allVisibleSelected =
+    filtered.length > 0 && filtered.every((m) => selected.has(m.id));
+
+  function toggleOne(id: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleAll() {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      for (const m of filtered) {
+        if (allVisibleSelected) next.delete(m.id);
+        else next.add(m.id);
+      }
+      return next;
+    });
+  }
+
+  // Clear the selection after a successful bulk delete (render-phase
+  // adjustment — no effect needed, same pattern as AddGroupForm).
+  const [prevBulk, setPrevBulk] = useState(bulkState);
+  if (bulkState !== prevBulk) {
+    setPrevBulk(bulkState);
+    if (bulkState.status === "success") setSelected(new Set());
+  }
 
   return (
     <div className="space-y-4">
@@ -84,6 +125,64 @@ export function MembersClient({
         <AddMemberForm groups={groups} onDone={() => setShowAdd(false)} />
       )}
 
+      {filtered.length > 0 && (
+        <div className={`${cardCls} flex flex-wrap items-center gap-3 px-4 py-2.5`}>
+          <label className="flex items-center gap-2 text-xs font-medium text-slate-500">
+            <input
+              type="checkbox"
+              checked={allVisibleSelected}
+              onChange={toggleAll}
+              aria-label="Select all shown members"
+              className="h-4 w-4 rounded border-slate-300 accent-indigo-600"
+            />
+            Select all shown
+          </label>
+
+          {selectedVisible.length > 0 && (
+            <div className="ml-auto flex items-center gap-2">
+              <span className="text-xs font-semibold text-slate-700">
+                {selectedVisible.length} selected
+              </span>
+              <form action={bulkAction}>
+                {selectedVisible.map((m) => (
+                  <input key={m.id} type="hidden" name="ids" value={m.id} />
+                ))}
+                <button
+                  type="submit"
+                  disabled={bulkPending}
+                  className={btnDangerSmall}
+                  onClick={(e) => {
+                    if (
+                      !window.confirm(
+                        `Delete ${selectedVisible.length} member${
+                          selectedVisible.length === 1 ? "" : "s"
+                        }? Their attendance history will be removed too.`
+                      )
+                    ) {
+                      e.preventDefault();
+                    }
+                  }}
+                >
+                  {bulkPending ? "Deleting…" : "Delete selected"}
+                </button>
+              </form>
+              <button
+                type="button"
+                onClick={() => setSelected(new Set())}
+                className={btnSmall}
+              >
+                Clear
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {bulkState.status === "error" && <p className={errorText}>{bulkState.message}</p>}
+      {bulkState.status === "success" && bulkState.message && (
+        <p className={successText}>{bulkState.message}</p>
+      )}
+
       {filtered.length === 0 ? (
         <div className={`${cardCls} px-5 py-10 text-center`}>
           <p className="text-sm font-medium text-slate-700">
@@ -98,7 +197,13 @@ export function MembersClient({
       ) : (
         <ul className={`${cardCls} divide-y divide-slate-100`}>
           {filtered.map((member) => (
-            <MemberRow key={member.id} member={member} groups={groups} />
+            <MemberRow
+              key={member.id}
+              member={member}
+              groups={groups}
+              selected={selected.has(member.id)}
+              onToggle={toggleOne}
+            />
           ))}
         </ul>
       )}
@@ -208,7 +313,17 @@ function AddMemberForm({
   );
 }
 
-function MemberRow({ member, groups }: { member: Member; groups: Group[] }) {
+function MemberRow({
+  member,
+  groups,
+  selected,
+  onToggle,
+}: {
+  member: Member;
+  groups: Group[];
+  selected: boolean;
+  onToggle: (id: string) => void;
+}) {
   const [editing, setEditing] = useState(false);
   const [deleteState, deleteAction, deletePending] = useActionState(
     deleteMemberAction,
@@ -229,6 +344,13 @@ function MemberRow({ member, groups }: { member: Member; groups: Group[] }) {
 
   return (
     <li className="flex flex-wrap items-center gap-3 px-4 py-3">
+      <input
+        type="checkbox"
+        checked={selected}
+        onChange={() => onToggle(member.id)}
+        aria-label={`Select ${member.name}`}
+        className="h-4 w-4 shrink-0 rounded border-slate-300 accent-indigo-600"
+      />
       <span
         aria-hidden
         className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-indigo-100 text-sm font-bold text-indigo-700"

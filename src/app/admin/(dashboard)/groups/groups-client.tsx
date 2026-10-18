@@ -3,6 +3,7 @@
 import { useActionState, useEffect, useState } from "react";
 import {
   addGroupAction,
+  bulkDeleteGroupsAction,
   deleteGroupAction,
   renameGroupAction,
 } from "@/app/admin/actions";
@@ -14,6 +15,7 @@ import {
   cardCls,
   errorText,
   inputCls,
+  successText,
 } from "@/lib/ui";
 
 const idle: MessageState = { status: "idle" };
@@ -25,9 +27,104 @@ export function GroupsClient({
   groups: Group[];
   counts: Record<string, number>;
 }) {
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkState, bulkAction, bulkPending] = useActionState(
+    bulkDeleteGroupsAction,
+    idle
+  );
+
+  const selectedGroups = groups.filter((g) => selected.has(g.id));
+  const allSelected = groups.length > 0 && groups.every((g) => selected.has(g.id));
+
+  function toggleOne(id: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleAll() {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      for (const g of groups) {
+        if (allSelected) next.delete(g.id);
+        else next.add(g.id);
+      }
+      return next;
+    });
+  }
+
+  // Clear the selection after a successful bulk delete (render-phase
+  // adjustment — no effect needed, same pattern as AddGroupForm).
+  const [prevBulk, setPrevBulk] = useState(bulkState);
+  if (bulkState !== prevBulk) {
+    setPrevBulk(bulkState);
+    if (bulkState.status === "success") setSelected(new Set());
+  }
+
   return (
     <div className="space-y-4">
       <AddGroupForm />
+
+      {groups.length > 0 && (
+        <div className={`${cardCls} flex flex-wrap items-center gap-3 px-4 py-2.5`}>
+          <label className="flex items-center gap-2 text-xs font-medium text-slate-500">
+            <input
+              type="checkbox"
+              checked={allSelected}
+              onChange={toggleAll}
+              aria-label="Select all groups"
+              className="h-4 w-4 rounded border-slate-300 accent-indigo-600"
+            />
+            Select all
+          </label>
+
+          {selectedGroups.length > 0 && (
+            <div className="ml-auto flex items-center gap-2">
+              <span className="text-xs font-semibold text-slate-700">
+                {selectedGroups.length} selected
+              </span>
+              <form action={bulkAction}>
+                {selectedGroups.map((g) => (
+                  <input key={g.id} type="hidden" name="ids" value={g.id} />
+                ))}
+                <button
+                  type="submit"
+                  disabled={bulkPending}
+                  className={btnDangerSmall}
+                  onClick={(e) => {
+                    if (
+                      !window.confirm(
+                        `Delete ${selectedGroups.length} group${
+                          selectedGroups.length === 1 ? "" : "s"
+                        }? Groups with members are skipped. This cannot be undone.`
+                      )
+                    ) {
+                      e.preventDefault();
+                    }
+                  }}
+                >
+                  {bulkPending ? "Deleting…" : "Delete selected"}
+                </button>
+              </form>
+              <button
+                type="button"
+                onClick={() => setSelected(new Set())}
+                className={btnSmall}
+              >
+                Clear
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {bulkState.status === "error" && <p className={errorText}>{bulkState.message}</p>}
+      {bulkState.status === "success" && bulkState.message && (
+        <p className={successText}>{bulkState.message}</p>
+      )}
 
       {groups.length === 0 ? (
         <div className={`${cardCls} px-5 py-10 text-center`}>
@@ -43,6 +140,8 @@ export function GroupsClient({
               key={group.id}
               group={group}
               count={counts[group.id] ?? 0}
+              selected={selected.has(group.id)}
+              onToggle={toggleOne}
             />
           ))}
         </ul>
@@ -91,7 +190,17 @@ function AddGroupForm() {
   );
 }
 
-function GroupRow({ group, count }: { group: Group; count: number }) {
+function GroupRow({
+  group,
+  count,
+  selected,
+  onToggle,
+}: {
+  group: Group;
+  count: number;
+  selected: boolean;
+  onToggle: (id: string) => void;
+}) {
   const [editing, setEditing] = useState(false);
   const [deleteState, deleteAction, deletePending] = useActionState(
     deleteGroupAction,
@@ -104,6 +213,13 @@ function GroupRow({ group, count }: { group: Group; count: number }) {
 
   return (
     <li className="flex flex-wrap items-center gap-3 px-4 py-3">
+      <input
+        type="checkbox"
+        checked={selected}
+        onChange={() => onToggle(group.id)}
+        aria-label={`Select ${group.name}`}
+        className="h-4 w-4 shrink-0 rounded border-slate-300 accent-indigo-600"
+      />
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-semibold text-slate-900">
           {group.name}

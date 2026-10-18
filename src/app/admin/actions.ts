@@ -17,6 +17,16 @@ function isUniqueViolation(err: unknown): boolean {
   );
 }
 
+/** Collects and de-duplicates the `ids` fields of a bulk-action form. */
+function parseIds(formData: FormData, field = "ids"): number[] {
+  const ids: number[] = [];
+  for (const raw of formData.getAll(field)) {
+    const id = parseId(String(raw));
+    if (id !== null && !ids.includes(id)) ids.push(id);
+  }
+  return ids;
+}
+
 export async function logoutAction(): Promise<void> {
   await clearAdminCookie();
   redirect("/admin/login");
@@ -184,6 +194,52 @@ export async function deleteGroupAction(
   return { status: "success" };
 }
 
+export async function bulkDeleteGroupsAction(
+  _prev: MessageState,
+  formData: FormData
+): Promise<MessageState> {
+  await requireAdmin();
+  const ids = parseIds(formData);
+  if (ids.length === 0) {
+    return { status: "error", message: "No groups selected." };
+  }
+
+  const db = await getDb();
+  // Keep the single-delete rule: a group can only go once it is empty.
+  const placeholders = ids.map(() => "?").join(",");
+  const occupied = await db.execute({
+    sql: `SELECT DISTINCT group_id FROM users
+          WHERE group_id IN (${placeholders})`,
+    args: ids,
+  });
+  const busy = new Set(occupied.rows.map((r) => Number(r.group_id)));
+  const deletable = ids.filter((id) => !busy.has(id));
+  const skipped = ids.length - deletable.length;
+
+  if (deletable.length === 0) {
+    return {
+      status: "error",
+      message:
+        "No groups deleted — every selected group still has members. Move or delete them first.",
+    };
+  }
+
+  const deletePlaceholders = deletable.map(() => "?").join(",");
+  await db.execute({
+    sql: `DELETE FROM groups WHERE id IN (${deletePlaceholders})`,
+    args: deletable,
+  });
+  refresh();
+  return {
+    status: "success",
+    message: `Deleted ${deletable.length} group${deletable.length === 1 ? "" : "s"}. ${
+      skipped > 0
+        ? `Skipped ${skipped} that still ${skipped === 1 ? "has" : "have"} members.`
+        : ""
+    }`.trim(),
+  };
+}
+
 /* ------------------------------ Members ----------------------------- */
 
 function validateMemberFields(
@@ -329,4 +385,28 @@ export async function deleteMemberAction(
   );
   refresh();
   return { status: "success" };
+}
+
+export async function bulkDeleteMembersAction(
+  _prev: MessageState,
+  formData: FormData
+): Promise<MessageState> {
+  await requireAdmin();
+  const ids = parseIds(formData);
+  if (ids.length === 0) {
+    return { status: "error", message: "No members selected." };
+  }
+
+  const db = await getDb();
+  // Attendance first so the delete works regardless of foreign-key mode.
+  const statements = ids.flatMap((id) => [
+    { sql: "DELETE FROM attendance WHERE user_id = ?", args: [id] },
+    { sql: "DELETE FROM users WHERE id = ?", args: [id] },
+  ]);
+  await db.batch(statements, "write");
+  refresh();
+  return {
+    status: "success",
+    message: `Deleted ${ids.length} member${ids.length === 1 ? "" : "s"}.`,
+  };
 }

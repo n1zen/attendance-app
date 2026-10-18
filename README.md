@@ -14,8 +14,8 @@ A simple attendance tracker built with **Next.js 16** (App Router), **SQLite**, 
 **For admins**
 
 - `/admin` — dashboard: today's live stats, the check-in list (auto-refreshes), and the big attendance QR code.
-- `/admin/members` — add, search, filter, edit, and delete members; per-member attendance history with **CSV** and detailed **XLSX** exports of the full history.
-- `/admin/groups` — add, rename, and delete groups (deletion is blocked while members still use the group).
+- `/admin/members` — add, search, filter, edit, and delete members (individually or in **bulk** via checkboxes); per-member attendance history with **CSV** and detailed **XLSX** exports of the full history.
+- `/admin/groups` — add, rename, and delete groups, individually or in **bulk** (a group can only be deleted while empty — bulk deletes skip any that still have members).
 - `/admin/analytics` — a per-day column chart plus per-group and per-member breakdowns for any date range (from/to filter, quick presets), with **CSV** and detailed **XLSX** exports of the selected range.
 - `/admin/settings` — change the admin password.
 
@@ -76,6 +76,19 @@ It creates three sample groups ("Morning Shift", "Afternoon Shift", "Evening Shi
 - **Idempotent and non-destructive** — re-running skips rows that already exist and never modifies or deletes anything, so it is safe to run alongside real data.
 - **Never seeds today** — the range ends yesterday, so the dashboard's live list stays yours.
 
+## Deploying on Local Machine
+
+To run the **production build** on your own machine — the same output Vercel serves, just hosted by Node.js directly instead of serverless functions:
+
+```bash
+npm run build
+npm run start        # http://localhost:3000
+```
+
+- **Data stays local** — the app uses the default SQLite file (see [Configuration](#configuration)); no Turso account needed. `SESSION_SECRET` still comes from `.env.local`.
+- **The process is the deployment** — leave the terminal open; stop with `Ctrl+C`. After changing code, re-run `npm run build`, then `npm run start` again.
+- **Phones can scan from day one** — unlike the dev server (which binds `localhost` by default), `next start` already listens on all interfaces. Open the dashboard via your machine's LAN IP (e.g. `http://192.168.x.x:3000/admin`) and the QR code will point phones at that address.
+
 ## Deploying to Vercel
 
 Vercel's serverless filesystem is ephemeral, so a deployed instance can't rely on a local database file. The standard setup is [Turso](https://turso.tech) — hosted SQLite with a free tier; the same libSQL client works locally and remotely.
@@ -101,7 +114,7 @@ Vercel's serverless filesystem is ephemeral, so a deployed instance can't rely o
    | `DATABASE_URL`      | your Turso database URL (`libsql://...`)           |
    | `TURSO_AUTH_TOKEN`  | the Turso auth token                               |
 
-5. **Deploy** (pushes to the production branch deploy automatically).
+5. **Deploy** (pushes to `master` deploy automatically).
 
 6. **Set up the app**: open `https://<your-project>.vercel.app/admin`, sign in with `admin` / `admin123`, and change the admin password (Settings). Create your groups, then leave the dashboard open — the QR code on it encodes the deployment URL, so members scan it straight from their phones.
 
@@ -171,3 +184,64 @@ src/
         analytics/         # date-range breakdowns + chart, CSV/XLSX export
         settings/          # change admin password
 ```
+
+## Forking this project
+
+1. Open the repository on GitHub and click **Fork** (top right). Keep "Copy the `master` branch only" checked.
+2. Clone **your** fork and enter the project:
+
+   ```bash
+   git clone https://github.com/<your-username>/AttendanceApp.git
+   cd AttendanceApp
+   ```
+
+3. Set it up by following [Local development](#local-development) above (`.env.local`, `npm install`, `npm run dev`) — that's all it takes; there is no database server to install.
+4. Optionally point your fork at the original repository so you can pull in upstream changes later:
+
+   ```bash
+   git remote add upstream https://github.com/<owner>/AttendanceApp.git
+   ```
+
+5. Push your fork and (optionally) connect it to your own Vercel project + Turso database by following [Deploying to Vercel](#deploying-to-vercel) — you'll get a full private deployment of your fork.
+
+**Keeping a fork in sync** with the original:
+
+```bash
+git fetch upstream
+git checkout master
+git merge upstream/master   # or: git rebase upstream/master
+git push
+```
+
+## Contributing
+
+Contributions are welcome — bug reports, fixes, documentation, and features alike.
+
+### Workflow
+
+1. **Fork and clone** the project (see [Forking this project](#forking-this-project) above).
+2. **Create a branch** for your change:
+
+   ```bash
+   git checkout -b fix/short-description    # or: feat/…, docs/…
+   ```
+
+3. **Make your changes.** Skim [Architecture notes](#architecture-notes) first — several conventions there (blocking routes, controlled forms, Philippine time, server-action auth) exist for concrete reasons and are easy to break by accident.
+4. **Verify** before pushing:
+
+   ```bash
+   npm run lint
+   npm run build
+   ```
+
+   Both must pass. For anything touching the admin or scan flows, also check the behavior in the browser — `npm run seed` gives you demo data to exercise it with (it is idempotent and safe to re-run).
+5. **Commit** with a clear message (what changed and why), push to your fork, and open a **pull request** against the original repository's `master` branch. Describe the motivation for the change; include screenshots for UI changes.
+
+### Guidelines
+
+- **Match the surrounding style.** Shared Tailwind class strings live in `src/lib/ui.ts` — reuse them instead of inventing near-identical button/card styles.
+- **Stay dependency-light.** Prefer the standard library, Next.js built-ins, and hand-rolled code over new packages; if a dependency really is needed (as `exceljs` was, for XLSX export), say why in the PR.
+- **Server actions, not API routes** — and every admin action must call `requireAdmin()` itself; the `/admin/*` proxy check is optimistic only.
+- **Don't commit local state** — `.env.local`, the SQLite database file, and `node_modules/` stay out of the repo (`.gitignore` already covers them).
+- **Large changes?** Open an issue first to discuss the direction before investing in a big PR.
+- **Found a bug but can't fix it?** An issue with reproduction steps is a perfectly good contribution.
