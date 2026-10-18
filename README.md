@@ -1,6 +1,6 @@
 # AttendanceApp
 
-A local-first attendance tracker built with **Next.js 16** (App Router), **MongoDB**, and **Tailwind CSS 4**. Users log their attendance by scanning a QR code — that's the whole flow. Admins manage everything from a dashboard.
+A simple attendance tracker built with **Next.js 16** (App Router), **MongoDB Atlas**, and **Tailwind CSS 4**. Members log their attendance by scanning a QR code — that's the whole flow. Admins manage everything from a dashboard.
 
 ## How it works
 
@@ -17,69 +17,99 @@ A local-first attendance tracker built with **Next.js 16** (App Router), **Mongo
 - `/admin/members` — add, search, filter, edit, and delete members; per-member attendance history.
 - `/admin/groups` — add, rename, and delete groups (deletion is blocked while members still use the group).
 
-## Getting started
+## Tech stack
+
+- **Next.js 16** — App Router, Server Components, server actions (no custom API routes)
+- **MongoDB Atlas** — the database
+- **Tailwind CSS 4** — light-mode UI
+
+## Local development
+
+### 1. Create a MongoDB Atlas database
+
+1. Create a free account at [MongoDB Atlas](https://www.mongodb.com/atlas) and build a free **M0** cluster.
+2. Under **Database Access**, create a database user with read/write access.
+3. Under **Network Access**, allow access from your machine (or `0.0.0.0/0` for "anywhere" during development).
+4. Copy the connection string (**Clusters → Connect → Drivers**) — it looks like:
+
+   ```
+   mongodb+srv://user:password@cluster0.xxxxx.mongodb.net/
+   ```
+
+### 2. Configure environment variables
+
+Create a `.env.local` file in the project root:
+
+```bash
+SESSION_SECRET=<random 32-byte hex string>
+MONGODB_URI=mongodb+srv://user:password@cluster0.xxxxx.mongodb.net/
+```
+
+Generate the secret with:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
+
+### 3. Run
 
 ```bash
 npm install
 npm run dev        # http://localhost:3000
 ```
 
-First-time admin login: **`admin` / `admin123`** — change the password hash or ask for a change-password flow before any real deployment. The default admin is seeded automatically on first login attempt, and a warning is printed to the console.
+First-time admin login: **`admin` / `admin123`** — the default admin is seeded automatically on first login attempt (with a console warning). **Change it before anyone else uses the app.**
 
-### Printing/scanning the QR code from phones
-
-Phones must be able to reach your computer. On your local network, run:
+To try the scan flow from your phone on the same network:
 
 ```bash
-npm run dev:lan   # binds to 0.0.0.0
+npm run dev:lan    # binds to 0.0.0.0
 ```
 
 Then open the dashboard via your computer's LAN IP (e.g. `http://192.168.x.x:3000/admin`) — the QR code encodes whatever origin you're viewing it from, so it will point phones at the right address.
 
-## Database
+## Deploying to Vercel
 
-By default the app runs a **local MongoDB via [mongodb-memory-server](https://github.com/typegoose/mongodb-memory-server)** — no installation needed. The data lives in `~/.attendanceapp/db` and survives restarts; the `mongod` binary is downloaded on first run.
+1. **Push the project to GitHub** (or any Git provider).
 
-> The database directory is intentionally **outside the project folder** so OneDrive (or any sync tool) never touches MongoDB's data files. Override the location with `MONGODB_DB_PATH` if needed.
+2. **Import it into Vercel**: [vercel.com/new](https://vercel.com/new) → import the repository. Vercel detects Next.js automatically — no build settings needed.
 
-To use your own MongoDB instead (local or Atlas), set it in `.env.local`:
+3. **Set the environment variables** in the Vercel project (**Settings → Environment Variables**):
 
-```bash
-MONGODB_URI=mongodb://127.0.0.1:27017/attendanceapp
-```
+   | Variable         | Value                                             |
+   | ---------------- | ------------------------------------------------- |
+   | `SESSION_SECRET` | a fresh random hex string (see command above)     |
+   | `MONGODB_URI`    | your Atlas connection string (same one as local)  |
 
-**Troubleshooting — `DBPathInUse` on startup:** if the server was force-killed (e.g. Task Manager) instead of stopped with Ctrl+C, its `mongod` child can survive and hold the database lock; the next start then fails its first request. The app stops `mongod` on normal shutdown, but after a force-kill, end the leftover `mongod` process (look for `mongod-x64-win*` in your process list) and reload — the server starts a fresh instance on the next request.
+4. **Allow Atlas connections from Vercel**: in Atlas under **Network Access**, add `0.0.0.0/0` (or Vercel's IP ranges). Redeploy after changing network rules if needed.
+
+5. **Deploy** (pushes to the production branch deploy automatically).
+
+6. **Set up the app**: open `https://<your-project>.vercel.app/admin`, sign in with `admin` / `admin123`, and change the admin password. Create your groups, then leave the dashboard open — the QR code on it encodes the deployment URL, so members scan it straight from their phones.
 
 ## Configuration
 
-| Variable            | Where       | Purpose                                          |
-| ------------------- | ----------- | ------------------------------------------------ |
-| `SESSION_SECRET`    | `.env.local`| Signs admin + device session cookies. Required.  |
-| `MONGODB_URI`       | `.env.local`| Optional — override the built-in dev database.   |
-| `MONGODB_DB_PATH`   | `.env.local`| Optional — where the local mongod stores data.   |
-
-Generate a new secret with:
-
-```bash
-node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-```
+| Variable        | Where        | Purpose                                    |
+| --------------- | ------------ | ------------------------------------------ |
+| `SESSION_SECRET`| `.env.local` / Vercel env | Signs admin + device session cookies. **Required.** |
+| `MONGODB_URI`   | `.env.local` / Vercel env | Your MongoDB Atlas connection string. **Required.** |
 
 > Note: changing `SESSION_SECRET` signs everyone out (admin + devices).
 
 ## Scripts
 
-| Command            | What it does                          |
-| ------------------ | ------------------------------------- |
-| `npm run dev`      | Dev server on localhost:3000          |
-| `npm run dev:lan`  | Dev server reachable from LAN devices |
-| `npm run build`    | Production build                      |
-| `npm run start`    | Serve the production build            |
-| `npm run lint`     | ESLint                                |
+| Command           | What it does                          |
+| ----------------- | ------------------------------------- |
+| `npm run dev`     | Dev server on localhost:3000          |
+| `npm run dev:lan` | Dev server reachable from LAN devices |
+| `npm run build`   | Production build                      |
+| `npm run start`   | Serve the production build            |
+| `npm run lint`    | ESLint                                |
 
 ## Architecture notes
 
-- **Next.js 16 with Cache Components** — but every data-driven page (`/scan`, `/admin`, `/admin/members`, `/admin/groups`, `/admin/members/[id]`) is deliberately a **blocking route** (`export const instant = false` + `connection()`, no `<Suspense>` data holes): it renders fully per request. Two reasons: Next 16.4 could fail to apply streamed-hole swaps on hard loads (pages got stuck on skeletons), and if the database dies mid-request the user gets an honest error page instead of an infinite spinner. Local Mongo is milliseconds fast, so there is nothing to gain from streaming here.
-- **Forms use controlled inputs** — React 19 resets uncontrolled forms after *every* server action, including failed ones, which wiped what members typed when validation failed. All action forms keep their values on error (see `src/app/scan/new-user-panel.tsx`).
+- **Blocking routes for data pages** — `/scan`, `/admin`, `/admin/members`, `/admin/groups`, and `/admin/members/[id]` render fully per request (`export const instant = false` + `connection()`, no data `<Suspense>` holes). This avoids Next 16.4's streamed-hole swap failures on hard loads (which left pages stuck on skeletons) and means a database error surfaces as an honest error page instead of an infinite spinner.
+- **Controlled form inputs** — React 19 resets uncontrolled forms after *every* server action, including failed ones, which wiped what members typed when validation failed. All action forms keep their values on error and clear only on success.
 - **Auth**: signed, HMAC-sha256 session cookies (`src/lib/tokens.ts`). `src/proxy.ts` optimistically gates `/admin/*`; every admin server action re-verifies the session against the database via `requireAdmin()`.
 - **Server actions only** — no custom API routes; every action validates its own authorization.
 - **Attendance is idempotent per day** — unique index on `(userId, date)`, upsert on check-in; scanning twice the same day never doubles up.
@@ -92,7 +122,7 @@ node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 src/
   proxy.ts                 # /admin/* gate (optimistic cookie check)
   lib/
-    db.ts                  # MongoDB connection (memory-server fallback)
+    db.ts                  # MongoDB connection (Atlas)
     data.ts                # Queries + serialization
     auth.ts                # Admin session + password hashing (scrypt)
     session.ts             # Cookie read/write helpers
