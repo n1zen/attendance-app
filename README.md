@@ -1,6 +1,6 @@
 # AttendanceApp
 
-A simple attendance tracker built with **Next.js 16** (App Router), **MongoDB Atlas**, and **Tailwind CSS 4**. Members log their attendance by scanning a QR code — that's the whole flow. Admins manage everything from a dashboard.
+A simple attendance tracker built with **Next.js 16** (App Router), **SQLite**, and **Tailwind CSS 4**. Members log their attendance by scanning a QR code — that's the whole flow. Admins manage everything from a dashboard.
 
 ## How it works
 
@@ -20,29 +20,19 @@ A simple attendance tracker built with **Next.js 16** (App Router), **MongoDB At
 ## Tech stack
 
 - **Next.js 16** — App Router, Server Components, server actions (no custom API routes)
-- **MongoDB Atlas** — the database
+- **SQLite** (through the [libSQL](https://github.com/tursodatabase/libSQL) client) — a plain database file locally, a hosted [Turso](https://turso.tech) database when deployed (free tier)
 - **Tailwind CSS 4** — light-mode UI
 
 ## Local development
 
-### 1. Create a MongoDB Atlas database
+There is no database server to install or run — the app creates its SQLite file automatically on first use.
 
-1. Create a free account at [MongoDB Atlas](https://www.mongodb.com/atlas) and build a free **M0** cluster.
-2. Under **Database Access**, create a database user with read/write access.
-3. Under **Network Access**, allow access from your machine (or `0.0.0.0/0` for "anywhere" during development).
-4. Copy the connection string (**Clusters → Connect → Drivers**) — it looks like:
-
-   ```
-   mongodb+srv://user:password@cluster0.xxxxx.mongodb.net/
-   ```
-
-### 2. Configure environment variables
+### 1. Configure environment variables
 
 Create a `.env.local` file in the project root:
 
 ```bash
 SESSION_SECRET=<random 32-byte hex string>
-MONGODB_URI=mongodb+srv://user:password@cluster0.xxxxx.mongodb.net/
 ```
 
 Generate the secret with:
@@ -51,7 +41,9 @@ Generate the secret with:
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ```
 
-### 3. Run
+`DATABASE_URL` is optional locally (the app defaults to a local SQLite file). Set it if you want a different file location, or to point at a hosted database.
+
+### 2. Run
 
 ```bash
 npm install
@@ -70,18 +62,28 @@ Then open the dashboard via your computer's LAN IP (e.g. `http://192.168.x.x:300
 
 ## Deploying to Vercel
 
-1. **Push the project to GitHub** (or any Git provider).
+Vercel's serverless filesystem is ephemeral, so a deployed instance can't rely on a local database file. The standard setup is [Turso](https://turso.tech) — hosted SQLite with a free tier; the same libSQL client works locally and remotely.
 
-2. **Import it into Vercel**: [vercel.com/new](https://vercel.com/new) → import the repository. Vercel detects Next.js automatically — no build settings needed.
+1. **Create a Turso database**:
 
-3. **Set the environment variables** in the Vercel project (**Settings → Environment Variables**):
+   ```bash
+   # sign up at turso.tech, then with the Turso CLI:
+   turso db create attendanceapp
+   turso db show attendanceapp      # copy the database URL (libsql://...)
+   turso db tokens create attendanceapp   # copy the token
+   ```
 
-   | Variable         | Value                                             |
-   | ---------------- | ------------------------------------------------- |
-   | `SESSION_SECRET` | a fresh random hex string (see command above)     |
-   | `MONGODB_URI`    | your Atlas connection string (same one as local)  |
+2. **Push the project to GitHub** (or any Git provider).
 
-4. **Allow Atlas connections from Vercel**: in Atlas under **Network Access**, add `0.0.0.0/0` (or Vercel's IP ranges). Redeploy after changing network rules if needed.
+3. **Import it into Vercel**: [vercel.com/new](https://vercel.com/new) → import the repository. Vercel detects Next.js automatically — no build settings needed.
+
+4. **Set the environment variables** in the Vercel project (**Settings → Environment Variables**):
+
+   | Variable            | Value                                              |
+   | ------------------- | -------------------------------------------------- |
+   | `SESSION_SECRET`    | a fresh random hex string (see command above)      |
+   | `DATABASE_URL`      | your Turso database URL (`libsql://...`)           |
+   | `TURSO_AUTH_TOKEN`  | the Turso auth token                               |
 
 5. **Deploy** (pushes to the production branch deploy automatically).
 
@@ -89,10 +91,11 @@ Then open the dashboard via your computer's LAN IP (e.g. `http://192.168.x.x:300
 
 ## Configuration
 
-| Variable        | Where        | Purpose                                    |
-| --------------- | ------------ | ------------------------------------------ |
-| `SESSION_SECRET`| `.env.local` / Vercel env | Signs admin + device session cookies. **Required.** |
-| `MONGODB_URI`   | `.env.local` / Vercel env | Your MongoDB Atlas connection string. **Required.** |
+| Variable           | Where                  | Purpose                                                                 |
+| ------------------ | ---------------------- | ----------------------------------------------------------------------- |
+| `SESSION_SECRET`   | `.env.local` / Vercel  | Signs admin + device session cookies. **Required.**                     |
+| `DATABASE_URL`     | optional / Vercel      | `file:...` path or `libsql://...` URL. Locally defaults to a SQLite file; **required on Vercel.** |
+| `TURSO_AUTH_TOKEN` | optional / Vercel      | Auth token when using a hosted Turso database.                          |
 
 > Note: changing `SESSION_SECRET` signs everyone out (admin + devices).
 
@@ -112,8 +115,8 @@ Then open the dashboard via your computer's LAN IP (e.g. `http://192.168.x.x:300
 - **Controlled form inputs** — React 19 resets uncontrolled forms after *every* server action, including failed ones, which wiped what members typed when validation failed. All action forms keep their values on error and clear only on success.
 - **Auth**: signed, HMAC-sha256 session cookies (`src/lib/tokens.ts`). `src/proxy.ts` optimistically gates `/admin/*`; every admin server action re-verifies the session against the database via `requireAdmin()`.
 - **Server actions only** — no custom API routes; every action validates its own authorization.
-- **Attendance is idempotent per day** — unique index on `(userId, date)`, upsert on check-in; scanning twice the same day never doubles up.
-- **Nicknames are unique** (case-insensitive) via a normalized `nicknameKey` field + unique index.
+- **Attendance is idempotent per day** — unique index on `(user_id, date)` + `ON CONFLICT DO NOTHING` upsert; scanning twice the same day never doubles up.
+- **Nicknames are unique** (case-insensitive) via a unique index on the normalized `nickname_key` column.
 - Light mode throughout (`color-scheme: light` in `globals.css`).
 
 ## Project structure
@@ -122,12 +125,12 @@ Then open the dashboard via your computer's LAN IP (e.g. `http://192.168.x.x:300
 src/
   proxy.ts                 # /admin/* gate (optimistic cookie check)
   lib/
-    db.ts                  # MongoDB connection (Atlas)
+    db.ts                  # SQLite connection (libSQL — file locally, Turso on Vercel)
     data.ts                # Queries + serialization
     auth.ts                # Admin session + password hashing (scrypt)
     session.ts             # Cookie read/write helpers
     tokens.ts              # HMAC sign/verify (pure, no Next APIs)
-    types.ts               # Shared types (docs + serialized shapes)
+    types.ts               # Shared serialized types for client components
     ui.ts                  # Shared Tailwind class strings
   app/
     page.tsx               # Landing

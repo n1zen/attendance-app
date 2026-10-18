@@ -25,14 +25,16 @@ export async function loginAction(
   await ensureAdminSeeded();
 
   const db = await getDb();
-  const admin = await db
-    .collection("admins")
-    .findOne({ usernameKey: normalizeKey(username) });
+  const rs = await db.execute({
+    sql: "SELECT id, password_hash FROM admins WHERE username_key = ?",
+    args: [normalizeKey(username)],
+  });
+  const admin = rs.rows[0];
 
-  if (!admin || !verifyPassword(password, admin.passwordHash)) {
+  if (!admin || !verifyPassword(password, String(admin.password_hash))) {
     return { status: "error", message: "Incorrect username or password." };
   }
 
-  await setAdminCookie(admin._id.toString());
+  await setAdminCookie(String(admin.id));
   redirect("/admin");
 }

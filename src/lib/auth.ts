@@ -1,7 +1,7 @@
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
-import { ObjectId } from "mongodb";
 import { redirect } from "next/navigation";
 import { getDb } from "./db";
+import { parseId } from "./data";
 import { readAdminToken, verifyToken } from "./session";
 
 export type AdminSession = { id: string; username: string };
@@ -25,21 +25,26 @@ export function verifyPassword(password: string, stored: string): boolean {
   );
 }
 
-/** Creates the default admin account when the admins collection is empty. */
+/** Creates the default admin account when the admins table is empty. */
 export async function ensureAdminSeeded(): Promise<void> {
   const db = await getDb();
-  const admins = db.collection("admins");
-  const count = await admins.countDocuments();
-  if (count > 0) return;
-  await admins.insertOne({
-    username: DEFAULT_ADMIN_USERNAME,
-    usernameKey: DEFAULT_ADMIN_USERNAME.toLowerCase(),
-    passwordHash: hashPassword(DEFAULT_ADMIN_PASSWORD),
-    createdAt: new Date(),
+  // Single conditional insert: concurrent first logins can't double-seed.
+  const result = await db.execute({
+    sql: `INSERT INTO admins (username, username_key, password_hash, created_at)
+          SELECT ?, ?, ?, ?
+          WHERE NOT EXISTS (SELECT 1 FROM admins)`,
+    args: [
+      DEFAULT_ADMIN_USERNAME,
+      DEFAULT_ADMIN_USERNAME.toLowerCase(),
+      hashPassword(DEFAULT_ADMIN_PASSWORD),
+      new Date().toISOString(),
+    ],
   });
-  console.warn(
-    `[attendance] Seeded default admin "${DEFAULT_ADMIN_USERNAME}" with the default password. Change it.`
-  );
+  if (result.rowsAffected > 0) {
+    console.warn(
+      `[attendance] Seeded default admin "${DEFAULT_ADMIN_USERNAME}" with the default password. Change it.`
+    );
+  }
 }
 
 /**
@@ -49,15 +54,17 @@ export async function ensureAdminSeeded(): Promise<void> {
  */
 export async function getAdmin(): Promise<AdminSession | null> {
   const payload = verifyToken(await readAdminToken());
-  if (!payload) return null;
-  if (!ObjectId.isValid(payload.id)) return null;
+  const id = payload ? parseId(payload.id) : null;
+  if (id === null) return null;
 
   const db = await getDb();
-  const admin = await db
-    .collection("admins")
-    .findOne({ _id: new ObjectId(payload.id) });
-  if (!admin) return null;
-  return { id: admin._id.toString(), username: admin.username };
+  const rs = await db.execute({
+    sql: "SELECT username FROM admins WHERE id = ?",
+    args: [id],
+  });
+  const row = rs.rows[0];
+  if (!row) return null;
+  return { id: String(id), username: String(row.username) };
 }
 
 /**

@@ -1,12 +1,10 @@
-import { ObjectId } from "mongodb";
+import type { Row } from "@libsql/client";
 import { getDb } from "./db";
 import type {
   AttendanceEntry,
   CheckInEntry,
   Group,
-  GroupDoc,
   Member,
-  UserDoc,
 } from "./types";
 
 /** Local calendar day as YYYY-MM-DD (matches the server's timezone). */
@@ -28,81 +26,94 @@ export function normalizeKey(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
-function serializeGroup(doc: GroupDoc): Group {
+/**
+ * Parses a string id (form field, URL param, token payload) into a SQLite
+ * row id. Returns null for anything that isn't a positive integer.
+ */
+export function parseId(value: string | null | undefined): number | null {
+  const n = Number(value);
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
+}
+
+type MemberRow = {
+  id: number;
+  name: string;
+  nickname: string;
+  group_id: number;
+  created_at: string;
+  group_name: string;
+};
+
+/** libSQL rows are dynamically typed; narrow one to a known column shape. */
+function castRow<T>(row: Row): T {
+  return row as unknown as T;
+}
+
+const MEMBER_SELECT = `
+  SELECT u.id, u.name, u.nickname, u.group_id, u.created_at,
+         COALESCE(g.name, 'Ungrouped') AS group_name
+  FROM users u
+  LEFT JOIN groups g ON g.id = u.group_id
+`;
+
+function serializeMember(row: MemberRow): Member {
   return {
-    id: doc._id.toString(),
-    name: doc.name,
-    createdAt: doc.createdAt.toISOString(),
+    id: String(row.id),
+    name: row.name,
+    nickname: row.nickname,
+    groupId: String(row.group_id),
+    groupName: row.group_name,
+    createdAt: row.created_at,
   };
 }
 
 export async function getGroups(): Promise<Group[]> {
   const db = await getDb();
-  const groups = await db
-    .collection<GroupDoc>("groups")
-    .find()
-    .sort({ name: 1 })
-    .toArray();
-  return groups.map(serializeGroup);
+  const rs = await db.execute(
+    "SELECT id, name, created_at FROM groups ORDER BY name"
+  );
+  return rs.rows.map((row) => ({
+    id: String(row.id),
+    name: String(row.name),
+    createdAt: String(row.created_at),
+  }));
 }
 
 export async function getGroupCounts(): Promise<
   Record<string, number>
 > {
   const db = await getDb();
-  const rows = await db
-    .collection<UserDoc>("users")
-    .aggregate<{ _id: ObjectId; count: number }>([
-      { $group: { _id: "$groupId", count: { $sum: 1 } } },
-    ])
-    .toArray();
+  const rs = await db.execute(
+    "SELECT group_id, COUNT(*) AS count FROM users GROUP BY group_id"
+  );
   const counts: Record<string, number> = {};
-  for (const row of rows) counts[row._id.toString()] = row.count;
+  for (const row of rs.rows) {
+    counts[String(row.group_id)] = Number(row.count);
+  }
   return counts;
 }
 
 export async function getMembers(): Promise<Member[]> {
   const db = await getDb();
-  const [users, groups] = await Promise.all([
-    db
-      .collection<UserDoc>("users")
-      .find()
-      .sort({ nickname: 1 })
-      .toArray(),
-    getGroups(),
-  ]);
-  const groupName = new Map(groups.map((g) => [g.id, g.name]));
-  return users.map((u) => ({
-    id: u._id.toString(),
-    name: u.name,
-    nickname: u.nickname,
-    groupId: u.groupId.toString(),
-    groupName: groupName.get(u.groupId.toString()) ?? "Ungrouped",
-    createdAt: u.createdAt.toISOString(),
-  }));
+  const rs = await db.execute(`${MEMBER_SELECT} ORDER BY u.nickname`);
+  return rs.rows.map((row) => serializeMember(castRow<MemberRow>(row)));
 }
 
 export async function getMember(
   id: string
 ): Promise<(Member & { createdDate: string }) | null> {
-  if (!ObjectId.isValid(id)) return null;
+  const numericId = parseId(id);
+  if (numericId === null) return null;
   const db = await getDb();
-  const user = await db
-    .collection<UserDoc>("users")
-    .findOne({ _id: new ObjectId(id) });
-  if (!user) return null;
-  const groups = await getGroups();
-  const groupName =
-    groups.find((g) => g.id === user.groupId.toString())?.name ??
-    "Ungrouped";
+  const rs = await db.execute({
+    sql: `${MEMBER_SELECT} WHERE u.id = ?`,
+    args: [numericId],
+  });
+  const row = rs.rows[0];
+  if (!row) return null;
   return {
-    id: user._id.toString(),
-    name: user.name,
-    nickname: user.nickname,
-    groupId: user.groupId.toString(),
-    groupName,
-    createdAt: user.createdAt.toISOString(),
-    createdDate: todayKey(user.createdAt),
+    ...serializeMember(castRow<MemberRow>(row)),
+    createdDate: todayKey(new Date(String(row.created_at))),
   };
 }
 
@@ -110,11 +121,12 @@ export async function findMemberByNickname(
   nickname: string
 ): Promise<Member | null> {
   const db = await getDb();
-  const user = await db.collection<UserDoc>("users").findOne({
-    nicknameKey: normalizeKey(nickname),
+  const rs = await db.execute({
+    sql: `${MEMBER_SELECT} WHERE u.nickname_key = ?`,
+    args: [normalizeKey(nickname)],
   });
-  if (!user) return null;
-  return getMember(user._id.toString());
+  const row = rs.rows[0];
+  return row ? serializeMember(castRow<MemberRow>(row)) : null;
 }
 
 export type TodayStats = {
@@ -127,99 +139,90 @@ export type TodayStats = {
 export async function getTodayStats(): Promise<TodayStats> {
   const db = await getDb();
   const date = todayKey();
-  const [present, total, groups] = await Promise.all([
-    db.collection("attendance").countDocuments({ date }),
-    db.collection("users").countDocuments(),
-    db.collection("groups").countDocuments(),
-  ]);
-  return { present, total, groups, date };
+  const rs = await db.execute({
+    sql: `SELECT
+            (SELECT COUNT(*) FROM attendance WHERE date = ?) AS present,
+            (SELECT COUNT(*) FROM users) AS total,
+            (SELECT COUNT(*) FROM groups) AS groups`,
+    args: [date],
+  });
+  const row = rs.rows[0];
+  return {
+    present: Number(row?.present ?? 0),
+    total: Number(row?.total ?? 0),
+    groups: Number(row?.groups ?? 0),
+    date,
+  };
 }
 
 export async function getTodayCheckIns(limit = 100): Promise<CheckInEntry[]> {
   const db = await getDb();
-  const date = todayKey();
-
-  // Post-lookup shape: `user` is unwound ($unwind, always one doc);
-  // `group` uses preserveNullAndEmptyArrays, so it may be missing.
-  type TodayRow = {
-    _id: ObjectId;
-    createdAt: Date;
-    user: UserDoc;
-    group?: GroupDoc;
-  };
-
-  const rows = await db
-    .collection("attendance")
-    .aggregate<TodayRow>([
-      { $match: { date } },
-      { $sort: { createdAt: -1 } },
-      { $limit: limit },
-      {
-        $lookup: {
-          from: "users",
-          localField: "userId",
-          foreignField: "_id",
-          as: "user",
-        },
-      },
-      { $unwind: { path: "$user", preserveNullAndEmptyArrays: false } },
-      {
-        $lookup: {
-          from: "groups",
-          localField: "user.groupId",
-          foreignField: "_id",
-          as: "group",
-        },
-      },
-      { $unwind: { path: "$group", preserveNullAndEmptyArrays: true } },
-    ])
-    .toArray();
-
-  return rows
-    .filter((row) => Boolean(row.user))
-    .map((row) => ({
-      id: row._id.toString(),
-      name: row.user.name,
-      nickname: row.user.nickname,
-      groupName: row.group?.name ?? "Ungrouped",
-      time: timeLabel(row.createdAt),
-    }));
+  const rs = await db.execute({
+    sql: `SELECT a.id, a.created_at, u.name, u.nickname,
+                 COALESCE(g.name, 'Ungrouped') AS group_name
+          FROM attendance a
+          JOIN users u ON u.id = a.user_id
+          LEFT JOIN groups g ON g.id = u.group_id
+          WHERE a.date = ?
+          ORDER BY a.created_at DESC
+          LIMIT ?`,
+    args: [todayKey(), limit],
+  });
+  return rs.rows.map((row) => ({
+    id: String(row.id),
+    name: String(row.name),
+    nickname: String(row.nickname),
+    groupName: String(row.group_name),
+    time: timeLabel(new Date(String(row.created_at))),
+  }));
 }
 
 export async function getMemberAttendance(
   memberId: string,
   limit = 365
 ): Promise<AttendanceEntry[]> {
-  if (!ObjectId.isValid(memberId)) return [];
+  const numericId = parseId(memberId);
+  if (numericId === null) return [];
   const db = await getDb();
-  const rows = await db
-    .collection("attendance")
-    .find({ userId: new ObjectId(memberId) })
-    .sort({ date: -1 })
-    .limit(limit)
-    .toArray();
-  return rows.map((row) => ({ date: row.date, time: timeLabel(row.createdAt) }));
+  const rs = await db.execute({
+    sql: `SELECT date, created_at FROM attendance
+          WHERE user_id = ?
+          ORDER BY date DESC
+          LIMIT ?`,
+    args: [numericId, limit],
+  });
+  return rs.rows.map((row) => ({
+    date: String(row.date),
+    time: timeLabel(new Date(String(row.created_at))),
+  }));
 }
 
 /**
- * Records today's attendance for a user. Upsert keeps it idempotent:
- * scanning twice on the same day never creates a second record.
+ * Records today's attendance for a user. The `(user_id, date)` unique index
+ * plus `ON CONFLICT DO NOTHING` keeps it idempotent: scanning twice on the
+ * same day never creates a second record.
  */
 export async function markAttendance(
-  userId: ObjectId
+  userId: number
 ): Promise<{ status: "in" | "already"; time: string }> {
   const db = await getDb();
   const date = todayKey();
-  const result = await db.collection("attendance").updateOne(
-    { userId, date },
-    { $setOnInsert: { userId, date, createdAt: new Date() } },
-    { upsert: true }
-  );
-  if (result.upsertedCount > 0) {
+  const inserted = await db.execute({
+    sql: `INSERT INTO attendance (user_id, date, created_at)
+          VALUES (?, ?, ?)
+          ON CONFLICT (user_id, date) DO NOTHING`,
+    args: [userId, date, new Date().toISOString()],
+  });
+  if (inserted.rowsAffected > 0) {
     return { status: "in", time: timeLabel() };
   }
-  const existing = await db
-    .collection("attendance")
-    .findOne({ userId, date });
-  return { status: "already", time: existing ? timeLabel(existing.createdAt) : timeLabel() };
+  const existing = await db.execute({
+    sql: "SELECT created_at FROM attendance WHERE user_id = ? AND date = ?",
+    args: [userId, date],
+  });
+  const createdAt = existing.rows[0]?.created_at;
+  return {
+    status: "already",
+    time: createdAt ? timeLabel(new Date(String(createdAt))) : timeLabel(),
+  };
 }

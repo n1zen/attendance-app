@@ -1,96 +1,100 @@
 import { mkdir } from "node:fs/promises";
-import os from "node:os";
+import { homedir } from "node:os";
 import path from "node:path";
-import { MongoClient, type Db } from "mongodb";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { createClient, type Client } from "@libsql/client";
 
-const DB_NAME = "attendanceapp";
+/**
+ * SQLite, accessed through the libSQL client:
+ *
+ * - Local development uses a plain database file — nothing to install or run.
+ *   The default location is `~/.attendanceapp/app.db`; override it with
+ *   `DATABASE_URL` (`file:...` for a file, or a bare path).
+ * - Vercel's serverless filesystem is ephemeral, so a deployed instance must
+ *   point `DATABASE_URL` (+ `TURSO_AUTH_TOKEN`) at a hosted libSQL database
+ *   (Turso) for data to persist.
+ *
+ * `@libsql/client` ships native bindings for `file:` URLs. It is in Next's
+ * default `serverExternalPackages` list, so they are not bundled.
+ */
 
-type Cached = {
-  client: MongoClient;
-  db: Db;
-  ready: Promise<void>;
-};
+const SCHEMA = [
+  `CREATE TABLE IF NOT EXISTS groups (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     name TEXT NOT NULL,
+     name_key TEXT NOT NULL UNIQUE,
+     created_at TEXT NOT NULL
+   )`,
+  `CREATE TABLE IF NOT EXISTS users (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     name TEXT NOT NULL,
+     nickname TEXT NOT NULL,
+     nickname_key TEXT NOT NULL UNIQUE,
+     group_id INTEGER NOT NULL REFERENCES groups(id),
+     created_at TEXT NOT NULL
+   )`,
+  `CREATE INDEX IF NOT EXISTS idx_users_group_id ON users(group_id)`,
+  `CREATE TABLE IF NOT EXISTS attendance (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     user_id INTEGER NOT NULL REFERENCES users(id),
+     date TEXT NOT NULL,
+     created_at TEXT NOT NULL,
+     UNIQUE (user_id, date)
+   )`,
+  `CREATE INDEX IF NOT EXISTS idx_attendance_date_created
+     ON attendance(date, created_at)`,
+  `CREATE TABLE IF NOT EXISTS admins (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     username TEXT NOT NULL,
+     username_key TEXT NOT NULL UNIQUE,
+     password_hash TEXT NOT NULL,
+     created_at TEXT NOT NULL
+   )`,
+];
+
+/** Best-effort `file:` URL -> filesystem path, for creating the parent dir. */
+function fileUrlToPath(url: string): string {
+  let p = decodeURIComponent(url.slice("file:".length));
+  // Windows form "file:///C:/..." -> "C:/..."
+  if (/^\/[A-Za-z]:/.test(p)) p = p.slice(1);
+  return p;
+}
+
+async function resolveDbUrl(): Promise<string> {
+  const raw = process.env.DATABASE_URL?.trim();
+  const url = !raw
+    ? `file:${path.join(homedir(), ".attendanceapp", "app.db")}`
+    : raw.includes("://")
+      ? raw // file:/file: URLs and libsql:// remote hosts
+      : `file:${path.resolve(raw)}`; // bare path shorthand
+  if (url.startsWith("file:")) {
+    await mkdir(path.dirname(fileUrlToPath(url)), { recursive: true });
+  }
+  return url;
+}
 
 declare global {
-  var __attendanceDb: Cached | undefined;
-  var __attendanceMemoryServer: MongoMemoryServer | undefined;
-  var __attendanceShutdownHooked: boolean | undefined;
+  var __attendanceDb: Promise<Client> | undefined;
 }
 
 /**
- * Kill the mongod child when the Next.js server exits. Without this, a
- * server that is stopped (Ctrl+C, restart) can leave mongod running and the
- * next start fails with `DBPathInUse` on the lock file.
+ * Returns the shared libSQL client, creating it (and applying the idempotent
+ * schema) on first use. Cached on `globalThis` to survive dev-server HMR
+ * reloads; cleared automatically when client creation fails, so a transient
+ * error doesn't poison every later request.
  */
-function registerShutdownHook() {
-  if (globalThis.__attendanceShutdownHooked) return;
-  globalThis.__attendanceShutdownHooked = true;
-  const stop = () => {
-    const instance = globalThis.__attendanceMemoryServer;
-    if (instance) {
-      globalThis.__attendanceMemoryServer = undefined;
-      void instance.stop();
-    }
-  };
-  process.once("SIGINT", stop);
-  process.once("SIGTERM", stop);
-  process.once("exit", stop);
-}
-
-async function ensureIndexes(db: Db): Promise<void> {
-  await Promise.all([
-    db.collection("groups").createIndex({ nameKey: 1 }, { unique: true }),
-    db.collection("users").createIndex({ nicknameKey: 1 }, { unique: true }),
-    db.collection("users").createIndex({ groupId: 1 }),
-    db
-      .collection("attendance")
-      .createIndex({ userId: 1, date: 1 }, { unique: true }),
-    db.collection("attendance").createIndex({ date: 1, createdAt: 1 }),
-    db.collection("admins").createIndex({ usernameKey: 1 }, { unique: true }),
-  ]);
-}
-
-async function resolveUri(): Promise<string> {
-  if (process.env.MONGODB_URI) {
-    return process.env.MONGODB_URI;
-  }
-  // Local-only fallback: a real mongod process managed by mongodb-memory-server.
-  // Default location is outside the project (and outside OneDrive sync) —
-  // MongoDB data files must not be touched by a sync engine.
-  if (!globalThis.__attendanceMemoryServer) {
-    const dbPath =
-      process.env.MONGODB_DB_PATH ??
-      path.join(os.homedir(), ".attendanceapp", "db");
-    await mkdir(dbPath, { recursive: true });
-    globalThis.__attendanceMemoryServer = await MongoMemoryServer.create({
-      instance: {
-        dbPath,
-        storageEngine: "wiredTiger",
-      },
-    });
-    registerShutdownHook();
-  }
-  return globalThis.__attendanceMemoryServer.getUri(DB_NAME);
-}
-
-export async function getDb(): Promise<Db> {
+export function getDb(): Promise<Client> {
   if (!globalThis.__attendanceDb) {
-    const uri = await resolveUri();
-    const client = new MongoClient(uri);
-    const db = client.db(DB_NAME);
-    const ready = client
-      .connect()
-      .then(() => ensureIndexes(db))
-      .catch((err) => {
-        // Drop the cached connection so the next request can retry cleanly.
-        globalThis.__attendanceDb = undefined;
-        throw err;
+    globalThis.__attendanceDb = (async () => {
+      const client = createClient({
+        url: await resolveDbUrl(),
+        authToken: process.env.TURSO_AUTH_TOKEN || undefined,
       });
-    globalThis.__attendanceDb = { client, db, ready };
+      await client.batch(SCHEMA, "write");
+      return client;
+    })().catch((err) => {
+      globalThis.__attendanceDb = undefined;
+      throw err;
+    });
   }
-
-  const cached = globalThis.__attendanceDb;
-  await cached.ready;
-  return cached.db;
+  return globalThis.__attendanceDb;
 }

@@ -1,7 +1,5 @@
-import { ObjectId } from "mongodb";
 import { connection } from "next/server";
-import { getDb } from "@/lib/db";
-import { getGroups } from "@/lib/data";
+import { getGroups, getMember, parseId } from "@/lib/data";
 import { readDeviceToken } from "@/lib/session";
 import { verifyToken } from "@/lib/tokens";
 import { CheckInClient } from "./checkin-client";
@@ -16,20 +14,15 @@ export async function ScanContent() {
   await connection();
 
   const payload = verifyToken(await readDeviceToken());
-  let user: { name: string; nickname: string } | null = null;
+  const userId = payload ? parseId(payload.id) : null;
+  const member = userId === null ? null : await getMember(String(userId));
 
-  if (payload && ObjectId.isValid(payload.id)) {
-    const db = await getDb();
-    const doc = await db
-      .collection("users")
-      .findOne({ _id: new ObjectId(payload.id) });
-    if (doc) user = { name: doc.name, nickname: doc.nickname };
-  }
-
-  if (!user) {
+  if (!member) {
     const groups = await getGroups();
     return <NewUserPanel groups={groups} />;
   }
 
-  return <CheckInClient user={user} />;
+  return (
+    <CheckInClient user={{ name: member.name, nickname: member.nickname }} />
+  );
 }

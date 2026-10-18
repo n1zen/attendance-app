@@ -1,20 +1,19 @@
 "use server";
 
 import { refresh } from "next/cache";
-import { ObjectId } from "mongodb";
 import { redirect } from "next/navigation";
 import { requireAdmin } from "@/lib/auth";
-import { normalizeKey } from "@/lib/data";
+import { normalizeKey, parseId } from "@/lib/data";
 import { getDb } from "@/lib/db";
 import { clearAdminCookie } from "@/lib/session";
 import type { MessageState } from "@/lib/types";
 
-function isDuplicateKeyError(err: unknown): boolean {
+function isUniqueViolation(err: unknown): boolean {
   return (
     typeof err === "object" &&
     err !== null &&
     "code" in err &&
-    (err as { code?: unknown }).code === 11000
+    String((err as { code: unknown }).code).startsWith("SQLITE_CONSTRAINT")
   );
 }
 
@@ -40,15 +39,14 @@ export async function addGroupAction(
 
   try {
     const db = await getDb();
-    await db.collection("groups").insertOne({
-      name,
-      nameKey: normalizeKey(name),
-      createdAt: new Date(),
+    await db.execute({
+      sql: "INSERT INTO groups (name, name_key, created_at) VALUES (?, ?, ?)",
+      args: [name, normalizeKey(name), new Date().toISOString()],
     });
     refresh();
     return { status: "success" };
   } catch (err) {
-    if (isDuplicateKeyError(err)) {
+    if (isUniqueViolation(err)) {
       return { status: "error", message: "A group with that name already exists." };
     }
     console.error("[admin] add group failed:", err);
@@ -61,10 +59,10 @@ export async function renameGroupAction(
   formData: FormData
 ): Promise<MessageState> {
   await requireAdmin();
-  const id = String(formData.get("id") ?? "");
+  const id = parseId(String(formData.get("id") ?? ""));
   const name = String(formData.get("name") ?? "").trim();
 
-  if (!ObjectId.isValid(id)) {
+  if (id === null) {
     return { status: "error", message: "Invalid group." };
   }
   if (name.length < 2 || name.length > 50) {
@@ -73,19 +71,17 @@ export async function renameGroupAction(
 
   try {
     const db = await getDb();
-    const result = await db
-      .collection("groups")
-      .updateOne(
-        { _id: new ObjectId(id) },
-        { $set: { name, nameKey: normalizeKey(name) } }
-      );
-    if (result.matchedCount === 0) {
+    const result = await db.execute({
+      sql: "UPDATE groups SET name = ?, name_key = ? WHERE id = ?",
+      args: [name, normalizeKey(name), id],
+    });
+    if (result.rowsAffected === 0) {
       return { status: "error", message: "That group no longer exists." };
     }
     refresh();
     return { status: "success" };
   } catch (err) {
-    if (isDuplicateKeyError(err)) {
+    if (isUniqueViolation(err)) {
       return { status: "error", message: "A group with that name already exists." };
     }
     console.error("[admin] rename group failed:", err);
@@ -98,16 +94,17 @@ export async function deleteGroupAction(
   formData: FormData
 ): Promise<MessageState> {
   await requireAdmin();
-  const id = String(formData.get("id") ?? "");
-  if (!ObjectId.isValid(id)) {
+  const id = parseId(String(formData.get("id") ?? ""));
+  if (id === null) {
     return { status: "error", message: "Invalid group." };
   }
 
   const db = await getDb();
-  const groupId = new ObjectId(id);
-  const memberCount = await db
-    .collection("users")
-    .countDocuments({ groupId });
+  const countResult = await db.execute({
+    sql: "SELECT COUNT(*) AS count FROM users WHERE group_id = ?",
+    args: [id],
+  });
+  const memberCount = Number(countResult.rows[0]?.count ?? 0);
   if (memberCount > 0) {
     return {
       status: "error",
@@ -117,7 +114,7 @@ export async function deleteGroupAction(
     };
   }
 
-  await db.collection("groups").deleteOne({ _id: groupId });
+  await db.execute({ sql: "DELETE FROM groups WHERE id = ?", args: [id] });
   refresh();
   return { status: "success" };
 }
@@ -157,30 +154,30 @@ export async function addMemberAction(
       message: Object.values(fieldErrors)[0],
     };
   }
-  if (!ObjectId.isValid(groupId)) {
+  const numericGroupId = parseId(groupId);
+  if (numericGroupId === null) {
     return { status: "error", message: "Pick a group from the list." };
   }
 
   try {
     const db = await getDb();
-    const group = await db
-      .collection("groups")
-      .findOne({ _id: new ObjectId(groupId) });
-    if (!group) {
+    const group = await db.execute({
+      sql: "SELECT id FROM groups WHERE id = ?",
+      args: [numericGroupId],
+    });
+    if (group.rows.length === 0) {
       return { status: "error", message: "That group no longer exists." };
     }
 
-    await db.collection("users").insertOne({
-      name,
-      nickname,
-      nicknameKey: normalizeKey(nickname),
-      groupId: group._id,
-      createdAt: new Date(),
+    await db.execute({
+      sql: `INSERT INTO users (name, nickname, nickname_key, group_id, created_at)
+            VALUES (?, ?, ?, ?, ?)`,
+      args: [name, nickname, normalizeKey(nickname), numericGroupId, new Date().toISOString()],
     });
     refresh();
     return { status: "success" };
   } catch (err) {
-    if (isDuplicateKeyError(err)) {
+    if (isUniqueViolation(err)) {
       return {
         status: "error",
         message: "That nickname is already taken by another member.",
@@ -196,49 +193,46 @@ export async function updateMemberAction(
   formData: FormData
 ): Promise<MessageState> {
   await requireAdmin();
-  const id = String(formData.get("id") ?? "");
+  const id = parseId(String(formData.get("id") ?? ""));
   const name = String(formData.get("name") ?? "").trim();
   const nickname = String(formData.get("nickname") ?? "").trim();
   const groupId = String(formData.get("groupId") ?? "").trim();
 
-  if (!ObjectId.isValid(id)) {
+  if (id === null) {
     return { status: "error", message: "Invalid member." };
   }
   const fieldErrors = validateMemberFields(name, nickname, groupId);
   if (fieldErrors) {
     return { status: "error", message: Object.values(fieldErrors)[0] };
   }
-  if (!ObjectId.isValid(groupId)) {
+  const numericGroupId = parseId(groupId);
+  if (numericGroupId === null) {
     return { status: "error", message: "Pick a group from the list." };
   }
 
   try {
     const db = await getDb();
-    const group = await db
-      .collection("groups")
-      .findOne({ _id: new ObjectId(groupId) });
-    if (!group) {
+    const group = await db.execute({
+      sql: "SELECT id FROM groups WHERE id = ?",
+      args: [numericGroupId],
+    });
+    if (group.rows.length === 0) {
       return { status: "error", message: "That group no longer exists." };
     }
 
-    const result = await db.collection("users").updateOne(
-      { _id: new ObjectId(id) },
-      {
-        $set: {
-          name,
-          nickname,
-          nicknameKey: normalizeKey(nickname),
-          groupId: group._id,
-        },
-      }
-    );
-    if (result.matchedCount === 0) {
+    const result = await db.execute({
+      sql: `UPDATE users
+            SET name = ?, nickname = ?, nickname_key = ?, group_id = ?
+            WHERE id = ?`,
+      args: [name, nickname, normalizeKey(nickname), numericGroupId, id],
+    });
+    if (result.rowsAffected === 0) {
       return { status: "error", message: "That member no longer exists." };
     }
     refresh();
     return { status: "success" };
   } catch (err) {
-    if (isDuplicateKeyError(err)) {
+    if (isUniqueViolation(err)) {
       return {
         status: "error",
         message: "That nickname is already taken by another member.",
@@ -254,17 +248,20 @@ export async function deleteMemberAction(
   formData: FormData
 ): Promise<MessageState> {
   await requireAdmin();
-  const id = String(formData.get("id") ?? "");
-  if (!ObjectId.isValid(id)) {
+  const id = parseId(String(formData.get("id") ?? ""));
+  if (id === null) {
     return { status: "error", message: "Invalid member." };
   }
 
   const db = await getDb();
-  const memberId = new ObjectId(id);
-  await Promise.all([
-    db.collection("users").deleteOne({ _id: memberId }),
-    db.collection("attendance").deleteMany({ userId: memberId }),
-  ]);
+  // Attendance first so the delete works regardless of foreign-key mode.
+  await db.batch(
+    [
+      { sql: "DELETE FROM attendance WHERE user_id = ?", args: [id] },
+      { sql: "DELETE FROM users WHERE id = ?", args: [id] },
+    ],
+    "write"
+  );
   refresh();
   return { status: "success" };
 }

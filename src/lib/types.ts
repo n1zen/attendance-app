@@ -1,38 +1,3 @@
-import type { ObjectId } from "mongodb";
-
-/** Raw documents as stored in MongoDB. Server-only. */
-export type GroupDoc = {
-  _id: ObjectId;
-  name: string;
-  nameKey: string;
-  createdAt: Date;
-};
-
-export type UserDoc = {
-  _id: ObjectId;
-  name: string;
-  nickname: string;
-  nicknameKey: string;
-  groupId: ObjectId;
-  createdAt: Date;
-};
-
-export type AttendanceDoc = {
-  _id: ObjectId;
-  userId: ObjectId;
-  /** Local calendar day, YYYY-MM-DD */
-  date: string;
-  createdAt: Date;
-};
-
-export type AdminDoc = {
-  _id: ObjectId;
-  username: string;
-  usernameKey: string;
-  passwordHash: string;
-  createdAt: Date;
-};
-
 /** Serialized shapes — safe to pass to Client Components. */
 export type Group = {
   id: string;

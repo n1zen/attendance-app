@@ -1,12 +1,12 @@
 "use server";
 
-import { ObjectId } from "mongodb";
-import { getDb } from "@/lib/db";
 import {
   findMemberByNickname,
   markAttendance,
   normalizeKey,
+  parseId,
 } from "@/lib/data";
+import { getDb } from "@/lib/db";
 import {
   readDeviceToken,
   setDeviceCookie,
@@ -14,30 +14,34 @@ import {
 import { verifyToken } from "@/lib/tokens";
 import type { ClaimState, RegisterState, ScanResult } from "@/lib/types";
 
-async function resolveDeviceUser() {
+/** Returns the member id remembered in the device cookie, if still valid. */
+async function resolveDeviceUser(): Promise<number | null> {
   const payload = verifyToken(await readDeviceToken());
-  if (!payload || !ObjectId.isValid(payload.id)) return null;
+  const id = payload ? parseId(payload.id) : null;
+  if (id === null) return null;
   const db = await getDb();
-  return db
-    .collection("users")
-    .findOne({ _id: new ObjectId(payload.id) });
+  const rs = await db.execute({
+    sql: "SELECT id FROM users WHERE id = ?",
+    args: [id],
+  });
+  return rs.rows.length > 0 ? id : null;
 }
 
-function isDuplicateKeyError(err: unknown): boolean {
+function isUniqueViolation(err: unknown): boolean {
   return (
     typeof err === "object" &&
     err !== null &&
     "code" in err &&
-    (err as { code?: unknown }).code === 11000
+    String((err as { code: unknown }).code).startsWith("SQLITE_CONSTRAINT")
   );
 }
 
 /** Called automatically when a recognized device opens /scan. Idempotent per day. */
 export async function checkInAction(): Promise<ScanResult> {
   const user = await resolveDeviceUser();
-  if (!user) return { status: "unauthorized" };
+  if (user === null) return { status: "unauthorized" };
   try {
-    return await markAttendance(user._id);
+    return await markAttendance(user);
   } catch (err) {
     console.error("[scan] check-in failed:", err);
     return {
@@ -76,21 +80,23 @@ export async function registerAction(
 
   // A device that already has an account has nothing to register.
   const existing = await resolveDeviceUser();
-  if (existing) return { status: "success" };
+  if (existing !== null) return { status: "success" };
 
   try {
     const db = await getDb();
 
-    if (!ObjectId.isValid(groupId)) {
+    const numericGroupId = parseId(groupId);
+    if (numericGroupId === null) {
       return {
         status: "error",
         fieldErrors: { groupId: "Pick a group from the list." },
       };
     }
-    const group = await db
-      .collection("groups")
-      .findOne({ _id: new ObjectId(groupId) });
-    if (!group) {
+    const group = await db.execute({
+      sql: "SELECT id FROM groups WHERE id = ?",
+      args: [numericGroupId],
+    });
+    if (group.rows.length === 0) {
       return {
         status: "error",
         fieldErrors: {
@@ -99,19 +105,18 @@ export async function registerAction(
       };
     }
 
-    const result = await db.collection("users").insertOne({
-      name,
-      nickname,
-      nicknameKey: normalizeKey(nickname),
-      groupId: group._id,
-      createdAt: new Date(),
+    const result = await db.execute({
+      sql: `INSERT INTO users (name, nickname, nickname_key, group_id, created_at)
+            VALUES (?, ?, ?, ?, ?)`,
+      args: [name, nickname, normalizeKey(nickname), numericGroupId, new Date().toISOString()],
     });
+    const newUserId = Number(result.lastInsertRowid);
 
-    await markAttendance(result.insertedId);
-    await setDeviceCookie(result.insertedId.toString());
+    await markAttendance(newUserId);
+    await setDeviceCookie(String(newUserId));
     return { status: "success" };
   } catch (err) {
-    if (isDuplicateKeyError(err)) {
+    if (isUniqueViolation(err)) {
       return {
         status: "error",
         message:
@@ -171,7 +176,11 @@ export async function claimAction(
   }
 
   try {
-    await markAttendance(new ObjectId(match.id));
+    const numericId = parseId(match.id);
+    if (numericId === null) {
+      return { status: "error", message: "Search again." };
+    }
+    await markAttendance(numericId);
     await setDeviceCookie(match.id);
     return { status: "success" };
   } catch (err) {
