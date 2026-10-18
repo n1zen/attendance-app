@@ -24,6 +24,8 @@ export const btnDangerSmall =
 
 export const errorText = "text-sm font-medium text-rose-600";
 
+export const successText = "text-sm font-medium text-emerald-600";
+
 export const mutedText = "text-sm text-slate-500";
 
 export const pageTitleCls =

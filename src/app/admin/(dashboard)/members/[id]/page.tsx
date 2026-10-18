@@ -3,13 +3,15 @@ import { notFound } from "next/navigation";
 import type { Metadata } from "next";
 import { connection } from "next/server";
 import { getMember, getMemberAttendance } from "@/lib/data";
+import { formatDay, formatIsoDate } from "@/lib/format";
 import {
+  btnSecondary,
   cardCls,
   pageSubtitleCls,
   pageTitleCls,
 } from "@/lib/ui";
 
-// This page renders fresh data on every request (MongoDB), so it blocks
+// This page renders fresh data from SQLite on every request, so it blocks
 // instead of prerendering a static shell. See next.config.ts note.
 export const instant = false;
 
@@ -29,11 +31,7 @@ export default async function MemberDetailPage(
 
   const attendance = await getMemberAttendance(id);
 
-  const joined = new Date(member.createdAt).toLocaleDateString(undefined, {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  });
+  const joined = formatIsoDate(member.createdAt);
 
   return (
     <div className="space-y-6">
@@ -86,10 +84,31 @@ export default async function MemberDetailPage(
 
           <section className={`${cardCls} lg:col-span-2`}>
             <header className="border-b border-slate-100 px-5 py-4">
-              <h2 className={pageTitleCls}>Attendance history</h2>
-              <p className={pageSubtitleCls}>
-                Every day {member.nickname} was marked present.
-              </p>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h2 className={pageTitleCls}>Attendance history</h2>
+                  <p className={pageSubtitleCls}>
+                    Every day {member.nickname} was marked present.
+                  </p>
+                </div>
+                <div className="flex shrink-0 gap-2">
+                  {/* Plain anchors (not Links): these trigger downloads. */}
+                  <a
+                    href={`/admin/members/${member.id}/export?format=csv`}
+                    className={btnSecondary}
+                    title="Download this member's check-ins as CSV"
+                  >
+                    Export CSV
+                  </a>
+                  <a
+                    href={`/admin/members/${member.id}/export?format=xlsx`}
+                    className={btnSecondary}
+                    title="Download this member's full history as an Excel workbook"
+                  >
+                    Export XLSX
+                  </a>
+                </div>
+              </div>
             </header>
 
             {attendance.length === 0 ? (
@@ -104,7 +123,7 @@ export default async function MemberDetailPage(
                     className="flex items-center justify-between gap-3 px-5 py-3"
                   >
                     <span className="text-sm font-medium text-slate-800">
-                      {formatDate(entry.date)}
+                      {formatDay(entry.date)}
                     </span>
                     <span className="flex items-center gap-3">
                       <span className="text-xs tabular-nums text-slate-500">
@@ -123,14 +142,4 @@ export default async function MemberDetailPage(
       </div>
     </div>
   );
-}
-
-function formatDate(date: string): string {
-  const d = new Date(`${date}T00:00:00`);
-  return d.toLocaleDateString(undefined, {
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  });
 }

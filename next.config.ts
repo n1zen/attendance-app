@@ -9,6 +9,9 @@ const nextConfig: NextConfig = {
   // fully per request instead of streaming into a hole.
   cacheComponents: true,
   partialPrefetching: true,
+  // exceljs (analytics XLSX export) relies on dynamic requires — run it from
+  // node_modules instead of bundling it.
+  serverExternalPackages: ["exceljs"],
   turbopack: {
     rules: {
       "*.css": {

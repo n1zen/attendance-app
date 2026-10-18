@@ -2,7 +2,7 @@
 
 import { refresh } from "next/cache";
 import { redirect } from "next/navigation";
-import { requireAdmin } from "@/lib/auth";
+import { requireAdmin, hashPassword, verifyPassword } from "@/lib/auth";
 import { normalizeKey, parseId } from "@/lib/data";
 import { getDb } from "@/lib/db";
 import { clearAdminCookie } from "@/lib/session";
@@ -17,9 +17,84 @@ function isUniqueViolation(err: unknown): boolean {
   );
 }
 
+/** Collects and de-duplicates the `ids` fields of a bulk-action form. */
+function parseIds(formData: FormData, field = "ids"): number[] {
+  const ids: number[] = [];
+  for (const raw of formData.getAll(field)) {
+    const id = parseId(String(raw));
+    if (id !== null && !ids.includes(id)) ids.push(id);
+  }
+  return ids;
+}
+
 export async function logoutAction(): Promise<void> {
   await clearAdminCookie();
   redirect("/admin/login");
+}
+
+/* ------------------------------ Account ------------------------------ */
+
+export async function changePasswordAction(
+  _prev: MessageState,
+  formData: FormData
+): Promise<MessageState> {
+  const admin = await requireAdmin();
+  const current = String(formData.get("current") ?? "");
+  const next = String(formData.get("next") ?? "");
+  const confirm = String(formData.get("confirm") ?? "");
+
+  if (!current || !next || !confirm) {
+    return { status: "error", message: "Fill in all three fields." };
+  }
+  if (next.length < 8) {
+    return {
+      status: "error",
+      message: "New password must be at least 8 characters.",
+    };
+  }
+  if (next.length > 200) {
+    return {
+      status: "error",
+      message: "Keep the new password under 200 characters.",
+    };
+  }
+  if (next !== confirm) {
+    return { status: "error", message: "New passwords do not match." };
+  }
+  if (next === current) {
+    return {
+      status: "error",
+      message: "Choose a password different from the current one.",
+    };
+  }
+
+  try {
+    const db = await getDb();
+    const rs = await db.execute({
+      sql: "SELECT password_hash FROM admins WHERE id = ?",
+      args: [Number(admin.id)],
+    });
+    const row = rs.rows[0];
+    if (!row || !verifyPassword(current, String(row.password_hash))) {
+      return {
+        status: "error",
+        message: "Your current password is incorrect.",
+      };
+    }
+
+    await db.execute({
+      sql: "UPDATE admins SET password_hash = ? WHERE id = ?",
+      args: [hashPassword(next), Number(admin.id)],
+    });
+    // No refresh(): the session cookie stays valid — just clear the form.
+    return { status: "success", message: "Password updated." };
+  } catch (err) {
+    console.error("[admin] change password failed:", err);
+    return {
+      status: "error",
+      message: "Could not update the password. Try again.",
+    };
+  }
 }
 
 /* ------------------------------ Groups ------------------------------ */
@@ -117,6 +192,52 @@ export async function deleteGroupAction(
   await db.execute({ sql: "DELETE FROM groups WHERE id = ?", args: [id] });
   refresh();
   return { status: "success" };
+}
+
+export async function bulkDeleteGroupsAction(
+  _prev: MessageState,
+  formData: FormData
+): Promise<MessageState> {
+  await requireAdmin();
+  const ids = parseIds(formData);
+  if (ids.length === 0) {
+    return { status: "error", message: "No groups selected." };
+  }
+
+  const db = await getDb();
+  // Keep the single-delete rule: a group can only go once it is empty.
+  const placeholders = ids.map(() => "?").join(",");
+  const occupied = await db.execute({
+    sql: `SELECT DISTINCT group_id FROM users
+          WHERE group_id IN (${placeholders})`,
+    args: ids,
+  });
+  const busy = new Set(occupied.rows.map((r) => Number(r.group_id)));
+  const deletable = ids.filter((id) => !busy.has(id));
+  const skipped = ids.length - deletable.length;
+
+  if (deletable.length === 0) {
+    return {
+      status: "error",
+      message:
+        "No groups deleted — every selected group still has members. Move or delete them first.",
+    };
+  }
+
+  const deletePlaceholders = deletable.map(() => "?").join(",");
+  await db.execute({
+    sql: `DELETE FROM groups WHERE id IN (${deletePlaceholders})`,
+    args: deletable,
+  });
+  refresh();
+  return {
+    status: "success",
+    message: `Deleted ${deletable.length} group${deletable.length === 1 ? "" : "s"}. ${
+      skipped > 0
+        ? `Skipped ${skipped} that still ${skipped === 1 ? "has" : "have"} members.`
+        : ""
+    }`.trim(),
+  };
 }
 
 /* ------------------------------ Members ----------------------------- */
@@ -264,4 +385,28 @@ export async function deleteMemberAction(
   );
   refresh();
   return { status: "success" };
+}
+
+export async function bulkDeleteMembersAction(
+  _prev: MessageState,
+  formData: FormData
+): Promise<MessageState> {
+  await requireAdmin();
+  const ids = parseIds(formData);
+  if (ids.length === 0) {
+    return { status: "error", message: "No members selected." };
+  }
+
+  const db = await getDb();
+  // Attendance first so the delete works regardless of foreign-key mode.
+  const statements = ids.flatMap((id) => [
+    { sql: "DELETE FROM attendance WHERE user_id = ?", args: [id] },
+    { sql: "DELETE FROM users WHERE id = ?", args: [id] },
+  ]);
+  await db.batch(statements, "write");
+  refresh();
+  return {
+    status: "success",
+    message: `Deleted ${ids.length} member${ids.length === 1 ? "" : "s"}.`,
+  };
 }

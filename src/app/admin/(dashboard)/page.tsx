@@ -13,7 +13,7 @@ export const metadata: Metadata = {
   robots: { index: false },
 };
 
-// This page renders fresh data on every request (MongoDB), so it blocks
+// This page renders fresh data from SQLite on every request, so it blocks
 // instead of prerendering a static shell. See next.config.ts note.
 export const instant = false;
 
