@@ -1,5 +1,6 @@
 import type { Row } from "@libsql/client";
 import { getDb } from "./db";
+import { TIME_ZONE } from "./format";
 import type {
   AttendanceEntry,
   CheckInEntry,
@@ -7,19 +8,32 @@ import type {
   Member,
 } from "./types";
 
-/** Local calendar day as YYYY-MM-DD (matches the server's timezone). */
+/*
+ * All day/time keys are computed in Philippine Time — the app's timezone —
+ * regardless of where the server runs (Vercel hosts are UTC).
+ */
+const dayFormatter = new Intl.DateTimeFormat("en-CA", {
+  timeZone: TIME_ZONE,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+
+const timeFormatter = new Intl.DateTimeFormat("en-US", {
+  timeZone: TIME_ZONE,
+  hour: "numeric",
+  minute: "2-digit",
+  hour12: true,
+});
+
+/** Philippine calendar day as YYYY-MM-DD. */
 export function todayKey(date: Date = new Date()): string {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, "0");
-  const d = String(date.getDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
+  return dayFormatter.format(date);
 }
 
-/** Local wall-clock time as HH:MM. */
+/** Philippine wall-clock time, 12-hour — e.g. "4:25 PM". */
 export function timeLabel(date: Date = new Date()): string {
-  return `${String(date.getHours()).padStart(2, "0")}:${String(
-    date.getMinutes()
-  ).padStart(2, "0")}`;
+  return timeFormatter.format(date);
 }
 
 export function normalizeKey(value: string): string {
@@ -225,4 +239,208 @@ export async function markAttendance(
     status: "already",
     time: createdAt ? timeLabel(new Date(String(createdAt))) : timeLabel(),
   };
+}
+
+/* ----------------------------- Analytics ----------------------------- */
+
+/** Returns the value as a real YYYY-MM-DD calendar day, or null. */
+function parseDay(value: string | undefined): string | null {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const d = new Date(`${value}T00:00:00Z`);
+  // Round-trip catches impossible days like 2026-02-31.
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === value
+    ? value
+    : null;
+}
+
+function daysAgo(count: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() - count);
+  return todayKey(d);
+}
+
+/**
+ * Resolves user-supplied `from`/`to` query params into a valid range.
+ * Falls back to the last 7 days (ending today) for missing/invalid values,
+ * and swaps the bounds when reversed. Days are Philippine-Time keys.
+ */
+export function resolveRange(
+  from: string | undefined,
+  to: string | undefined
+): { from: string; to: string } {
+  let f = parseDay(from) ?? daysAgo(6);
+  let t = parseDay(to) ?? todayKey();
+  if (f > t) [f, t] = [t, f];
+  return { from: f, to: t };
+}
+
+export type DayCount = { date: string; count: number };
+
+export type GroupAnalytics = {
+  id: string;
+  name: string;
+  members: number;
+  active: number;
+  checkins: number;
+};
+
+export type MemberAnalytics = {
+  id: string;
+  name: string;
+  nickname: string;
+  groupName: string;
+  checkins: number;
+  lastDate: string | null;
+};
+
+export type RangeStats = {
+  from: string;
+  to: string;
+  days: number;
+  totalCheckins: number;
+  activeMembers: number;
+  activeGroups: number;
+  daily: DayCount[];
+  groups: GroupAnalytics[];
+  members: MemberAnalytics[];
+};
+
+function daySpan(from: string, to: string): number {
+  const ms =
+    new Date(`${to}T00:00:00Z`).getTime() -
+    new Date(`${from}T00:00:00Z`).getTime();
+  return Math.round(ms / 86_400_000) + 1;
+}
+
+/**
+ * Attendance analytics for a date range (Philippine day keys): per-day
+ * totals, per-group breakdown, and per-member breakdown. Check-ins are
+ * attributed to each member's current group.
+ */
+export async function getRangeStats(
+  from: string,
+  to: string
+): Promise<RangeStats> {
+  const db = await getDb();
+  const args = [from, to];
+
+  const [daily, groups, members] = await Promise.all([
+    db.execute({
+      sql: `SELECT date, COUNT(*) AS count FROM attendance
+            WHERE date BETWEEN ? AND ?
+            GROUP BY date
+            ORDER BY date`,
+      args,
+    }),
+    db.execute({
+      sql: `SELECT g.id, g.name,
+                   COUNT(DISTINCT u.id) AS members,
+                   COUNT(DISTINCT a.user_id) AS active,
+                   COUNT(a.id) AS checkins
+            FROM groups g
+            LEFT JOIN users u ON u.group_id = g.id
+            LEFT JOIN attendance a
+              ON a.user_id = u.id AND a.date BETWEEN ? AND ?
+            GROUP BY g.id
+            ORDER BY checkins DESC, g.name`,
+      args,
+    }),
+    db.execute({
+      sql: `SELECT u.id, u.name, u.nickname,
+                   COALESCE(g.name, 'Ungrouped') AS group_name,
+                   COUNT(a.id) AS checkins,
+                   MAX(a.date) AS last_date
+            FROM users u
+            LEFT JOIN groups g ON g.id = u.group_id
+            LEFT JOIN attendance a
+              ON a.user_id = u.id AND a.date BETWEEN ? AND ?
+            GROUP BY u.id
+            ORDER BY checkins DESC, u.nickname`,
+      args,
+    }),
+  ]);
+
+  const groupRows = groups.rows.map((r) => ({
+    id: String(r.id),
+    name: String(r.name),
+    members: Number(r.members),
+    active: Number(r.active),
+    checkins: Number(r.checkins),
+  }));
+
+  return {
+    from,
+    to,
+    days: daySpan(from, to),
+    totalCheckins: groupRows.reduce((sum, g) => sum + g.checkins, 0),
+    activeMembers: groupRows.reduce((sum, g) => sum + g.active, 0),
+    activeGroups: groupRows.filter((g) => g.active > 0).length,
+    daily: daily.rows.map((r) => ({
+      date: String(r.date),
+      count: Number(r.count),
+    })),
+    groups: groupRows,
+    members: members.rows.map((r) => ({
+      id: String(r.id),
+      name: String(r.name),
+      nickname: String(r.nickname),
+      groupName: String(r.group_name),
+      checkins: Number(r.checkins),
+      lastDate: r.last_date ? String(r.last_date) : null,
+    })),
+  };
+}
+
+/** Fills the missing days of a range with zero counts. */
+export function zeroFill(
+  from: string,
+  to: string,
+  days: DayCount[]
+): DayCount[] {
+  const byDate = new Map(days.map((d) => [d.date, d.count]));
+  const out: DayCount[] = [];
+  const cur = new Date(`${from}T00:00:00Z`);
+  const end = new Date(`${to}T00:00:00Z`);
+  while (cur.getTime() <= end.getTime()) {
+    const key = cur.toISOString().slice(0, 10);
+    out.push({ date: key, count: byDate.get(key) ?? 0 });
+    cur.setUTCDate(cur.getUTCDate() + 1);
+  }
+  return out;
+}
+
+export type AttendanceLogEntry = {
+  date: string;
+  time: string;
+  name: string;
+  nickname: string;
+  groupName: string;
+};
+
+/**
+ * Every check-in row in a range, in order — the raw feed for the CSV/XLSX
+ * exports. `time` is the Philippine-Time wall clock of the check-in.
+ */
+export async function getAttendanceLog(
+  from: string,
+  to: string
+): Promise<AttendanceLogEntry[]> {
+  const db = await getDb();
+  const rs = await db.execute({
+    sql: `SELECT a.date, a.created_at, u.name, u.nickname,
+                 COALESCE(g.name, 'Ungrouped') AS group_name
+          FROM attendance a
+          JOIN users u ON u.id = a.user_id
+          LEFT JOIN groups g ON g.id = u.group_id
+          WHERE a.date BETWEEN ? AND ?
+          ORDER BY a.date, a.created_at`,
+    args: [from, to],
+  });
+  return rs.rows.map((r) => ({
+    date: String(r.date),
+    time: timeLabel(new Date(String(r.created_at))),
+    name: String(r.name),
+    nickname: String(r.nickname),
+    groupName: String(r.group_name),
+  }));
 }

@@ -6,7 +6,7 @@ export const metadata: Metadata = {
   description: "Scan to log your attendance.",
 };
 
-// Blocking route: resolves the device cookie + MongoDB on every request.
+// Blocking route: resolves the device cookie + SQLite on every request.
 // (Streaming the panel behind a Suspense boundary risked leaving hard loads
 // stuck on the loading card if the request died mid-stream.)
 export const instant = false;

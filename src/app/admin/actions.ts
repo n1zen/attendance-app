@@ -2,7 +2,7 @@
 
 import { refresh } from "next/cache";
 import { redirect } from "next/navigation";
-import { requireAdmin } from "@/lib/auth";
+import { requireAdmin, hashPassword, verifyPassword } from "@/lib/auth";
 import { normalizeKey, parseId } from "@/lib/data";
 import { getDb } from "@/lib/db";
 import { clearAdminCookie } from "@/lib/session";
@@ -20,6 +20,71 @@ function isUniqueViolation(err: unknown): boolean {
 export async function logoutAction(): Promise<void> {
   await clearAdminCookie();
   redirect("/admin/login");
+}
+
+/* ------------------------------ Account ------------------------------ */
+
+export async function changePasswordAction(
+  _prev: MessageState,
+  formData: FormData
+): Promise<MessageState> {
+  const admin = await requireAdmin();
+  const current = String(formData.get("current") ?? "");
+  const next = String(formData.get("next") ?? "");
+  const confirm = String(formData.get("confirm") ?? "");
+
+  if (!current || !next || !confirm) {
+    return { status: "error", message: "Fill in all three fields." };
+  }
+  if (next.length < 8) {
+    return {
+      status: "error",
+      message: "New password must be at least 8 characters.",
+    };
+  }
+  if (next.length > 200) {
+    return {
+      status: "error",
+      message: "Keep the new password under 200 characters.",
+    };
+  }
+  if (next !== confirm) {
+    return { status: "error", message: "New passwords do not match." };
+  }
+  if (next === current) {
+    return {
+      status: "error",
+      message: "Choose a password different from the current one.",
+    };
+  }
+
+  try {
+    const db = await getDb();
+    const rs = await db.execute({
+      sql: "SELECT password_hash FROM admins WHERE id = ?",
+      args: [Number(admin.id)],
+    });
+    const row = rs.rows[0];
+    if (!row || !verifyPassword(current, String(row.password_hash))) {
+      return {
+        status: "error",
+        message: "Your current password is incorrect.",
+      };
+    }
+
+    await db.execute({
+      sql: "UPDATE admins SET password_hash = ? WHERE id = ?",
+      args: [hashPassword(next), Number(admin.id)],
+    });
+    // No refresh(): the session cookie stays valid — just clear the form.
+    return { status: "success", message: "Password updated." };
+  } catch (err) {
+    console.error("[admin] change password failed:", err);
+    return {
+      status: "error",
+      message: "Could not update the password. Try again.",
+    };
+  }
 }
 
 /* ------------------------------ Groups ------------------------------ */

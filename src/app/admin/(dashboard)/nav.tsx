@@ -7,6 +7,8 @@ const links = [
   { href: "/admin", label: "Dashboard", exact: true },
   { href: "/admin/members", label: "Members", exact: false },
   { href: "/admin/groups", label: "Groups", exact: false },
+  { href: "/admin/analytics", label: "Analytics", exact: false },
+  { href: "/admin/settings", label: "Settings", exact: false },
 ];
 
 function linkClass(active: boolean): string {

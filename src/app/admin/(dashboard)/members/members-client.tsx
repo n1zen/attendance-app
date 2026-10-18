@@ -8,6 +8,7 @@ import {
   updateMemberAction,
 } from "@/app/admin/actions";
 import type { Group, Member, MessageState } from "@/lib/types";
+import { formatIsoDate } from "@/lib/format";
 import {
   btnDangerSmall,
   btnPrimary,
@@ -224,11 +225,7 @@ function MemberRow({ member, groups }: { member: Member; groups: Group[] }) {
     );
   }
 
-  const joined = new Date(member.createdAt).toLocaleDateString(undefined, {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  });
+  const joined = formatIsoDate(member.createdAt);
 
   return (
     <li className="flex flex-wrap items-center gap-3 px-4 py-3">

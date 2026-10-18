@@ -72,7 +72,7 @@ export default function Home() {
       </main>
 
       <footer className="border-t border-slate-200 bg-white py-6 text-center text-xs text-slate-400">
-        Local-first · MongoDB · Next.js
+        Local-first · SQLite · Next.js
       </footer>
     </div>
   );
